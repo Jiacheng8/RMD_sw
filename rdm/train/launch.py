@@ -82,7 +82,7 @@ def load_generator_weights(model, load_from: str, mode: str) -> None:
                        list(missing)[:3], list(unexpected)[:3])
 
 
-def build_generator_from_config(cfg, device: str = "cuda"):
+def build_generator_from_config(cfg, device: str = "cuda", param_dtype=None):
     """Construct the trainable generator (+ optional tokenizer) and its sampling wrapper."""
     mode = getattr(cfg, "mode", "imagenet")
     sampling_args = dict(num_steps=getattr(cfg, "num_sampling_steps", 1),
@@ -92,8 +92,11 @@ def build_generator_from_config(cfg, device: str = "cuda"):
     tokenizer = None
     if mode == "flux":
         from ..representation.generators.flux_generator import Flux2AdapterModel, Flux2VAETokenizer
+        # param_dtype is a MEMORY knob, not a method one: fp32 klein-4B is 15.5 GB of weights
+        # before grads and optimizer state, which does not leave room for the battery on an
+        # 80 GB card. Defaults to fp32 so the iRDM path is unchanged.
         model = Flux2AdapterModel(image_resolution=getattr(cfg, "img_size", 512),
-                                  param_dtype=torch.float32,
+                                  param_dtype=param_dtype or torch.float32,
                                   gradient_checkpointing=getattr(cfg, "grad_checkpointing", True),
                                   compile_blocks=getattr(cfg, "compile_model", False)).to(device)
         tokenizer = Flux2VAETokenizer(device=device)

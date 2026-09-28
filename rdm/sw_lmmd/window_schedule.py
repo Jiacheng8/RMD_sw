@@ -1,0 +1,157 @@
+"""The overlapping window schedule over a fixed random permutation of the reference rows.
+
+Window ``t`` is ``K`` consecutive positions of ``row_order`` starting at ``t * B``; its last
+``B`` rows are *active* (freshly rolled out, back-propagated) and its first ``K - B`` are
+*retained* (served from the generated-feature cache, detached). Sliding by exactly ``B`` makes
+
+    previous.all_ids[B:] == current.retained_ids
+
+an identity, which the cache relies on to hand back the right rows. It is asserted on every
+transition, cyclic wrap included, rather than trusted -- a silent mismatch here would train
+the generator against the wrong prompts' reference features and still look healthy in the loss.
+
+Order is a **seeded random permutation** by default, not a semantic ordering. A window is
+therefore a random size-``K`` subset ("local" means *this finite subset*, not *semantically
+close*); semantic orderings are a controlled ablation because they shrink within-window
+diversity and invite sequential forgetting.
+
+Crossing an epoch boundary changes the permutation (or the cyclic offset), which destroys the
+overlap identity above: the old cache is meaningless under the new order and must be dropped
+and re-bootstrapped. :meth:`SlidingWindowSchedule.new_epoch` returns the new epoch index and
+the trainer treats that as a cache-invalidation signal.
+"""
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+
+import numpy as np
+
+
+@dataclass(frozen=True)
+class WindowBatch:
+    """One window: the full row set, the retained prefix, the active suffix."""
+
+    all_ids: np.ndarray
+    retained_ids: np.ndarray
+    active_ids: np.ndarray
+    step: int
+    epoch: int
+
+
+def build_row_order(num_rows: int, seed: int = 3407) -> np.ndarray:
+    """The canonical reproducible permutation ``row_order[position] -> row_id``."""
+    return np.random.default_rng(seed).permutation(int(num_rows)).astype(np.int64)
+
+
+def order_hash(order: np.ndarray) -> str:
+    """Short digest of a row order, recorded in checkpoints so a resume cannot silently
+    continue under a different permutation."""
+    return hashlib.sha1(np.ascontiguousarray(order, dtype=np.int64).tobytes()).hexdigest()[:16]
+
+
+class SlidingWindowSchedule:
+    """Yields overlapping :class:`WindowBatch`es and guards the overlap identity."""
+
+    def __init__(self, row_order, window_size: int = 1024, stride: int = 128,
+                 cyclic: bool = True, start_offset: int = 0, reverse: bool = False,
+                 epoch: int = 0):
+        order = np.asarray(row_order, dtype=np.int64)
+        if order.ndim != 1 or order.size == 0:
+            raise ValueError("row_order must be a non-empty 1-D array of row ids")
+        if stride <= 0 or window_size <= 0:
+            raise ValueError("window size and stride must be positive")
+        if stride > window_size:
+            raise ValueError(f"stride {stride} must be <= window_size {window_size}")
+        if window_size > order.size:
+            raise ValueError(f"window_size {window_size} exceeds the {order.size} available rows")
+        self._base_order = order
+        self.window_size = int(window_size)
+        self.stride = int(stride)
+        self.cyclic = bool(cyclic)
+        self.epoch = int(epoch)
+        self._configure(start_offset, reverse)
+
+    # ---------------------------------------------------------------- internals
+    def _configure(self, start_offset: int, reverse: bool) -> None:
+        self.reverse = bool(reverse)
+        self.order = self._base_order[::-1].copy() if self.reverse else self._base_order
+        self.start_offset = int(start_offset) % self.order.size
+        self.step = 0
+        self._prev_all_ids: np.ndarray | None = None
+
+    @property
+    def overlap(self) -> int:
+        return self.window_size - self.stride
+
+    @property
+    def num_rows(self) -> int:
+        return int(self.order.size)
+
+    def _positions(self, start: int, length: int) -> np.ndarray:
+        pos = np.arange(start, start + length, dtype=np.int64)
+        if self.cyclic:
+            return pos % self.order.size
+        if pos[-1] >= self.order.size:
+            raise StopIteration("non-cyclic schedule exhausted; call new_epoch()")
+        return pos
+
+    def _window_at(self, step: int) -> WindowBatch:
+        start = self.start_offset + step * self.stride
+        ids = self.order[self._positions(start, self.window_size)]
+        return WindowBatch(all_ids=ids, retained_ids=ids[:self.overlap],
+                           active_ids=ids[self.overlap:], step=step, epoch=self.epoch)
+
+    # ---------------------------------------------------------------- public API
+    def peek(self) -> WindowBatch:
+        """The window :meth:`next` would return, without advancing."""
+        return self._window_at(self.step)
+
+    def next(self) -> WindowBatch:
+        """Advance one stride and return the new window (asserting the overlap identity)."""
+        batch = self._window_at(self.step)
+        if self._prev_all_ids is not None:
+            expected = self._prev_all_ids[self.stride:]
+            if not np.array_equal(expected, batch.retained_ids):
+                raise RuntimeError(
+                    "window overlap broken: previous.all_ids[stride:] != current.retained_ids "
+                    f"at step {self.step} (expected {expected[:3]}..., got "
+                    f"{batch.retained_ids[:3]}...). The generated cache would be misaligned.")
+        self._prev_all_ids = batch.all_ids
+        self.step += 1
+        return batch
+
+    def new_epoch(self, seed: int | None = None, random_start: bool = True,
+                  reverse_probability: float = 0.5) -> int:
+        """Reshuffle / re-offset for the next epoch. **Invalidates the generated cache.**
+
+        Returns the new epoch index. Full coverage is preserved: the permutation is
+        re-drawn or the traversal re-anchored, never truncated or re-weighted.
+        """
+        self.epoch += 1
+        rng = np.random.default_rng(self.epoch if seed is None else seed)
+        if seed is not None:
+            self._base_order = rng.permutation(self._base_order)
+        offset = int(rng.integers(self.order.size)) if random_start else 0
+        reverse = bool(rng.random() < reverse_probability)
+        self._configure(offset, reverse)
+        return self.epoch
+
+    # ---------------------------------------------------------------- checkpointing
+    def state_dict(self) -> dict:
+        # Hash the BASE order: it is independent of `reverse` / `start_offset`, which are
+        # recorded separately, so the digest identifies the permutation alone.
+        return {"step": self.step, "start_offset": self.start_offset, "reverse": self.reverse,
+                "epoch": self.epoch, "order_hash": order_hash(self._base_order),
+                "window_size": self.window_size, "stride": self.stride}
+
+    def load_state_dict(self, state: dict, strict: bool = True) -> None:
+        if strict and state.get("order_hash") not in (None, order_hash(self._base_order)):
+            # Resuming under a different permutation would keep the step counter but change
+            # which rows it points at -- silently training on a different schedule.
+            raise RuntimeError("row order hash mismatch on resume: this checkpoint was written "
+                               "under a different permutation. Rebuild row_order with the "
+                               "recorded seed, or resume with strict=False and re-bootstrap.")
+        self.epoch = int(state.get("epoch", 0))
+        self._configure(int(state.get("start_offset", 0)), bool(state.get("reverse", False)))
+        self.step = int(state["step"])

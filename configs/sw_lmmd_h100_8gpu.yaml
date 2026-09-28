@@ -1,0 +1,20 @@
+# SW-LMMD on 8 x H100 (80 GB) -- the scale-up rung.
+#
+# Same method as sw_lmmd_debug_4x4090.yaml; only `memory:` changes. Sized for 94 GB H100 /
+# 141 GB H200: fp32 params + AdamW is 62 GB of training state, which with an fp32 battery
+# reaches 76 GB and does NOT fit an 80 GB card -- use sw_lmmd_h100_2gpu.yaml (bf16) there.
+# B=128 / 8 ranks = 16 active rows per rank, 8 at a time -> grad_accum 2.
+extends: sw_lmmd_flux.yaml
+exp_name: sw-lmmd-flux-h100-8gpu
+
+memory:
+  shard: none
+  grad_reduce: mean           # no DDP/FSDP wrapper -> the trainer reduces
+  optimizer: adamw
+  param_dtype: fp32
+  battery_bf16: true           # 80 GB cards additionally need param_dtype: bf16
+  micro_batch: 8              # -> grad_accum = 128 / (8 * 8) = 2
+  encoder_offload: false
+
+encoders: [inception, convnext, mae, clip, dinov3_l, pe_core_l, siglip2, aimv2_huge, webssl_dino_1b, dreamsim]
+steps: 2000

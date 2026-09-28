@@ -1,0 +1,24 @@
+# SW-LMMD on 4 x RTX 4090 (24 GB, no NVLink) -- the debug rung.
+#
+# ONLY the `memory:` block differs from the H100 config. The method (K=1024, B=128, the
+# window schedule, the force normalization) is inherited untouched, so a run here and a run
+# on H100s differentiate the same objective -- see tests/test_sw_lmmd_parity.py.
+#
+# Why this shape: klein-4B full-parameter AdamW is fp32 params + grads + two moments
+# = 3.875e9 x 16 B ~ 62 GB, which does not fit a 24 GB card. Sharding four ways plus 8-bit
+# moments brings the resident training state to ~9.7 GB/rank; three bf16 encoders add ~2.6 GB.
+# B=128 / 4 ranks = 32 active rows per rank, taken one at a time -> grad_accum 32.
+extends: sw_lmmd_flux.yaml
+exp_name: sw-lmmd-flux-debug-4x4090
+
+memory:
+  shard: fsdp                 # 62 GB of training state does NOT fit one 24 GB card
+  grad_reduce: none           # FSDP's reduce-scatter already averages -- see MemoryPolicy
+  optimizer: adamw8bit        # 31 GB of AdamW moments -> ~7.8 GB
+  param_dtype: bf16
+  battery_bf16: true
+  micro_batch: 1              # -> grad_accum = 128 / (4 * 1) = 32
+  encoder_offload: false
+
+steps: 20                     # the memory-feasibility gate, not a training run
+monitor_every: 1

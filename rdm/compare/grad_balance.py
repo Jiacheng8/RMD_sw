@@ -24,6 +24,20 @@ def self_normalize(raw: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
     return raw / (raw.detach().abs() + eps)
 
 
-def clip_generator_grads(parameters, max_norm: float = 2.0) -> torch.Tensor:
-    """Clip the generator gradient to ``max_norm`` (returns the pre-clip total norm)."""
+def clip_generator_grads(parameters, max_norm: float = 2.0, module=None) -> torch.Tensor:
+    """Clip the generator gradient to ``max_norm`` (returns the pre-clip total norm).
+
+    ``module`` must be passed when the generator is FSDP-wrapped. Under FSDP each rank holds
+    only its shard of every parameter, so ``torch.nn.utils.clip_grad_norm_`` would compute the
+    norm of that shard alone -- a different, too-small norm on every rank, which silently
+    rescales the step instead of raising. ``FSDP.clip_grad_norm_`` reduces the norm across
+    shards first. Without FSDP the two are identical, so passing ``module`` is always safe.
+    """
+    if module is not None:
+        try:
+            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+            if isinstance(module, FSDP):
+                return module.clip_grad_norm_(max_norm)
+        except ImportError:
+            pass
     return torch.nn.utils.clip_grad_norm_(parameters, max_norm)

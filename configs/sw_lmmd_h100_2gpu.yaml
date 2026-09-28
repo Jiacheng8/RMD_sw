@@ -1,0 +1,47 @@
+# SW-LMMD on 2 x H100 80GB -- the first real-hardware target.
+#
+# ONLY the `memory:` block differs from the 4090 and 8-GPU configs; K=1024 / B=128 and the
+# whole method are inherited untouched, and tests/test_sw_lmmd_parity.py shows the parameter
+# gradient is identical at world 1/2/4, so a 2-GPU run and an 8-GPU run optimize the same thing.
+#
+# Memory, per card (shard: none is DATA parallel -- every rank holds a FULL copy of the
+# training state, so adding GPUs buys throughput, never headroom):
+#
+#   bf16 params 7.8 + bf16 grads 7.8 + fp32 Adam moments 31.0   = 46.5 GB
+#   3 encoders in bf16 (dinov3_l + siglip2 + aimv2_huge)         =  2.8 GB
+#   VAE + activations (micro_batch 8, per-block checkpointing)   = ~16 GB  [ESTIMATE]
+#   ------------------------------------------------------------------------
+#                                                                 ~65 GB / 80 GB
+#
+# The activation term is the ONE number here that is estimated rather than computed, and it
+# is the only one that scales with micro_batch. If the first run OOMs, halve micro_batch (and
+# double grad_accum implicitly) -- tests/test_sw_lmmd_trainer.py proves that does not change
+# the gradient, so it costs throughput and nothing else.
+#
+# fp32 params would put this at 76 GB, which leaves no room for fragmentation -- that is why
+# param_dtype is bf16 here and not the fp32 the 141 GB H200 reference run used.
+extends: sw_lmmd_flux.yaml
+exp_name: sw-lmmd-flux-h100-2gpu
+
+reference_root: /data/thor/jiacheng/rdm-sets/sw_lmmd/reference_store
+
+memory:
+  shard: none                 # 46.5 GB fits one 80 GB card; no sharding needed
+  grad_reduce: mean           # no DDP/FSDP wrapper -> the trainer reduces, exactly once
+  optimizer: adamw            # adamw8bit drops the moments 31.0 -> 7.8 GB if you want slack
+  param_dtype: bf16
+  battery_bf16: true          # 16.8 -> 7.8 GB; the kernels upcast to fp32 anyway
+  micro_batch: 8              # -> grad_accum = 128 / (2 * 8) = 8
+                              # mb=1 would mean 128 klein-4B forwards per optimizer step
+                              # (64 in each GradCache pass) at batch 1 -- correct, but it
+                              # wastes the GPU. 8 cuts that to 16.
+  encoder_offload: false
+
+# Start narrow (spec sec. 14.1): verify the loop on three encoders before the full battery.
+encoders: [dinov3_l, siglip2, aimv2_huge]
+
+steps: 20                     # first run is the integration + memory gate, not training
+monitor_every: 1
+probe_every: 10               # staleness probe cadence (0 = follow cache.refresh_every_windows)
+save_freq: 10
+save_cache: false             # weights-only checkpoints; a resume re-bootstraps the window

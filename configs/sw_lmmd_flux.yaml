@@ -1,0 +1,57 @@
+# SW-LMMD on FLUX.2 [klein]: the METHOD. Hardware lives in the sibling configs that extend
+# this one -- sw_lmmd_debug_4x4090.yaml (24 GB, sharded) and sw_lmmd_h100_8gpu.yaml (80 GB).
+# Nothing below changes between them, which is the point: K=1024 / B=128 divides 1, 2, 4, 8,
+# 16 and 32 ranks, so the same window ports from one GPU to a 32-rank job untouched.
+extends: base.yaml
+method: sw_lmmd
+exp_name: sw-lmmd-flux-klein
+mode: flux
+
+# ---- Generator: FLUX.2 klein-4B, 4-step teacher -> 1-step student ----
+img_size: 512
+num_sampling_steps: 1
+grad_checkpointing: true
+compile_model: false
+
+# ---- Window: K=1024 compared per step, B=128 fresh + back-propagated ----
+window:
+  size: 1024                  # K
+  stride: 128                 # B  (overlap 896, oldest context row is 7 steps old)
+  cyclic: true                # every row gets the same long-run membership count
+  order_seed: 3407            # seeded random permutation -- NOT a semantic ordering
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+
+# ---- Reference: all rows kept, nothing compressed ----
+# Built by scripts/fetch_prerequisites.py -> rdm.refprep.run joint -> the SW-LMMD store
+# builder. Bandwidths are fixed offline and never re-estimated per window.
+reference_root: data/sw_lmmd_reference
+encoders: [dinov3_l, siglip2, aimv2_huge]
+# Start at 1-3 encoders and only widen to the full battery once the loop is verified
+# (spec sec. 14.1); the full panel is:
+# [inception, convnext, mae, clip, dinov3_l, pe_core_l, siglip2, aimv2_huge, webssl_dino_1b, dreamsim]
+encoder_weighting: uniform    # lambda_e = 1/E; the global iRDM self-norm / PID floors are
+                              # NOT reused -- they are defined for an MMD^2 scalar, and the
+                              # force surrogate is signed and crosses zero.
+joint: true                   # [phi | beta*tau(c)]; false -> image-marginal ablation
+
+loss:
+  estimator: biased_mmd
+  kernel: rbf
+  kernel_block_size: 256
+  # full_to_active_gradient_ratio = K/B = 8 is DIAGNOSTIC. It is already inside the 1/(BK)
+  # force normalization; multiplying the loss by it again applies the correction twice.
+
+# ---- Cache staleness: measured every step, refreshed on a schedule or a drift trigger ----
+cache:
+  refresh_every_windows: 20
+  refresh_probe_rows: 64      # re-rolled to measure drift; never trained on
+  drift_threshold: 0.05
+
+# ---- Optimization ----
+active_global_batch: 128      # B; grad_accum is DERIVED from micro_batch x world
+lr: 2.83e-6
+grad_clip: 4.0
+steps: 2000
+save_freq: 50
+seed: 0

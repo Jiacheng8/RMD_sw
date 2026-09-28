@@ -1,155 +1,346 @@
 <div align="center">
 
-# Representation Distribution Matching for One-Step Visual Generation
+# SW-LMMD
 
-*One step from real.*
+**Sliding-Window Prompt-Aligned Local MMD Distillation**
 
-**Lan Feng**<sup>1</sup> &nbsp;·&nbsp; **Wuyang Li**<sup>1</sup> &nbsp;·&nbsp; **Éloi Zablocki**<sup>2</sup> &nbsp;·&nbsp; **Matthieu Cord**<sup>2,3</sup> &nbsp;·&nbsp; **Alexandre Alahi**<sup>1</sup>
-
-<sup>1</sup>EPFL &nbsp;&nbsp;·&nbsp;&nbsp; <sup>2</sup>Valeo.ai &nbsp;&nbsp;·&nbsp;&nbsp; <sup>3</sup>Sorbonne Université
-
-[![Project Page](https://img.shields.io/badge/Project_Page-E8972B?style=for-the-badge&logoColor=white)](https://alan-lanfeng.github.io/rdm/)
-[![arXiv](https://img.shields.io/badge/arXiv-2607.02375-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2607.02375)
-[![Paper](https://img.shields.io/badge/Paper-PDF-4b4b4b?style=for-the-badge)](https://alan-lanfeng.github.io/rdm/RDM.pdf)
-[![Live Demo](https://img.shields.io/badge/Live_Demo-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black)](https://huggingface.co/spaces/epfl-vita/flux2-klein-1step-demo)
-[![Checkpoints](https://img.shields.io/badge/Checkpoints-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black)](https://huggingface.co/epfl-vita/flux2-klein-1step-rdm)
-[![License: MIT](https://img.shields.io/badge/License-MIT-2ea44f?style=for-the-badge)](LICENSE)
-
-<br/>
-
-<img src="figures/teaser.jpg" alt="iRDM post-trains four-step FLUX.2 [klein] into a one-step generator at matched quality; GenEval and PickScore climb past the four-step teacher in about 90 H200 GPU-hours." width="100%"/>
-
-<sub><em>iRDM post-trains four-step FLUX.2&nbsp;[klein] into a <b>one-step</b> generator at matched quality — one network evaluation, no iterative sampling.</em></sub>
+*A fork of [vita-epfl/RDM](https://github.com/vita-epfl/RDM) — one-step distillation at a fraction of the per-step cost.*
 
 </div>
 
 ---
 
-Train a **one-step** image generator with **no online teacher, no adversary, no trajectory** by
-matching generated and real feature distributions under a battery of frozen pretrained
-encoders. iRDM combines the preferred choice on each of the two design axes of RDM:
+## What this fork is
 
-- **Comparison** — a squared MMD with a Gaussian kernel on raw embeddings, estimated as an
-  **exact within-batch repulsion** paired with a **Nyström attraction** toward a reference
-  frozen once over the whole training set (eq. 3), fed by **large fresh generation batches**
-  (gradient caching absorbs the memory), and — for text-to-image — the **joint image-text law**.
-- **Representation** — a **battery of frozen encoders** (10 train + 4 held out), kept in
-  balance by a **proportional Lagrangian controller**.
+Upstream **iRDM** distills a one-step image generator by matching generated and reference
+feature distributions under a battery of frozen encoders. Its loss compares a *large fresh
+rollout* — 10,240 generated images per optimizer step for the FLUX run — against a reference
+compressed once into a global Nyström kernel-mean embedding.
 
-It sets the one-step ImageNet state of the art at **SW_r14 1.30**, and post-trains four-step
-FLUX.2 [klein] into a one-step model that surpasses it on GenEval (0.826 vs 0.794).
+This fork replaces that objective with **SW-LMMD**, which
 
-## Install
+1. keeps **every** reference row uncompressed and prompt-addressable, and
+2. compares an **exact** two-sample MMD inside an overlapping window of `K = 1024`
+   prompt-aligned rows, of which only the newest `B = 128` are freshly generated and
+   back-propagated.
+
+Per-step fresh rollouts drop **10,240 → 128**. Everything else — the encoder battery, the
+joint image-text feature, GradCache, the generator wrapper — is reused unchanged.
+
+> **Status.** The method layer is implemented and proven (124 tests, incl. the two invariants
+> below). It has **never been run on the real 4B model**: every test uses a toy generator and a
+> mock battery, and the reference store is still being built. See [Status](#status).
+
+---
+
+## The method
+
+### Global vs. local
+
+Write the reference as a mixture over prompt-indexed components, `Q = Σ_s π_s Q_s`, and the
+student likewise. With `d_s = μ_{P_s} − μ_{Q_s}` the two objectives are
+
+```
+L_global = ‖ Σ_s π_s d_s ‖²           (iRDM: one global mean embedding)
+L_local  =   Σ_s π_s ‖ d_s ‖²          (SW-LMMD: per-component)
+```
+
+Jensen gives `L_global ≤ L_local`. The gap is exactly the error *cancellation* the global
+objective permits: two prompt subsets can be wrong in opposite directions and still produce a
+small global MMD. The local objective forbids that trade.
+
+This is why the reference cannot be a Nyström bundle. `α = K_ZZ⁻¹ μ_Zr` with
+`μ_Zr[k] = mean_j k(Z_k, r_j)` has already summed over `j` — row identity is integrated out, and
+`Z` is k-means centroids, not any real image's feature. It answers "how close is this batch to
+the reference *as a whole*", which is precisely `L_global`. SW-LMMD needs `y_j` for the specific
+rows whose prompts the student just generated from, so it reads per-row features instead.
+
+### The window
+
+Window `t` is `K` consecutive positions of a fixed seeded permutation, starting at `t·B`:
+
+```
+step t     [ retained  K−B = 896 rows ][ active B = 128 ]
+              from cache, detached        fresh, grad
+step t+1        [ retained 896 ]............[ active 128 ]
+                 └─ slid right by exactly B ─┘
+```
+
+Sliding by exactly `B` makes `previous.all_ids[B:] == current.retained_ids` an identity, which
+the cache relies on — it is asserted on every transition, cyclic wrap included. Reference and
+generated sides index the **same rows**, so both distributions sit on the same prompt support.
+
+Order is a **seeded random permutation**, not a semantic one: "local" means *this finite
+subset*, not *semantically close*. Semantic orderings shrink within-window diversity and invite
+sequential forgetting, so they are a controlled ablation rather than the default.
+
+### The force
+
+The full local MMD's gradient at a generated point is
+
+```
+∂L/∂x_i = (2/K²) Σ_{j∈W} [ ∇ k(x_i, x_j) − ∇ k(x_i, y_j) ]
+```
+
+Back-propagating through the `B` active rows alone reproduces it exactly via
+
+```
+L_force = (2/(B·K)) Σ_{i∈A} Σ_{j∈W} [ k(x_i, sg(x_j)) − k(x_i, y_j) ]
+```
+
+Three things this encodes, each a documented way to get it wrong:
+
+- **The second kernel argument is always detached** — including where it is one of this step's
+  own active rows. Letting both carry gradient and adding a symmetry factor of 2 double-counts.
+- **The `K/B` correction is already inside `1/(B·K)`.** Relative to the full MMD's `1/K²`,
+  dividing by `B·K` *is* that factor. Multiplying the loss by it again applies it twice.
+- **The forward scalar is not an MMD.** It is a surrogate whose *gradient* is right; it is
+  signed and its magnitude is not comparable across `K`. The monitored `mmd2` is logged
+  separately and never back-propagated.
+
+### What this trades away
+
+The retained `K−B` features were produced by older parameters — at `K=1024, B=128` the oldest is
+`⌈K/B⌉−1 = 7` optimizer steps stale. That bias is the method's central research risk, so drift
+is a first-class metric, bucketed by cache age:
+
+```
+Δ = ‖x_cached − x_refreshed‖ / (‖x_refreshed‖ + ε)
+```
+
+Because latents are derived per **row id**, a re-roll reuses that row's original noise, so `Δ`
+isolates parameter drift instead of mixing it with a different noise draw.
+
+### Two invariants, both proven
+
+**1. The force identity** — `∇_active L_force == (K/B) · ∇_x MMD²|_last B`, verified in float64
+across three `(K,B)` shapes. This is what licenses back-propagating 128 rows instead of 1024.
+
+**2. World-size invariance** — identical parameter gradients at world 1 / 2 / 4 (`rtol=1e-8`)
+over real gloo processes, and across micro-batch 1 / 2 / 4. It rests on four properties:
+per-row noise derivation, contiguous rank partition, *detached* all-gather of the context, and
+per-rank `1/(B_local·K)` normalization combined with a **mean** reduction, which telescopes
+exactly:
+
+```
+(1/R) Σ_r  2/((B/R)·K) Σ_{i∈A_r} (·)   ==   2/(B·K) Σ_{i∈A} (·)
+```
+
+So one config ports from a single GPU to a 32-rank job unchanged. `B = 128` divides 1, 2, 4, 8,
+16 and 32.
+
+---
+
+## The reference
+
+**The reference is teacher output, not real photographs.** The student is initialised from the
+4-step klein-4B teacher, so photographs are a target neither model reaches and the objective
+stops being distillation.
+
+Following the paper's COCO block: render `SEEDS = 24` candidates per caption, keep the
+**PickScore top-`KEEP`**. Curation is the mechanism, not a detail — it makes the target the
+teacher's *best* output rather than its average, which is how a one-step student can exceed the
+four-step teacher it came from. `KEEP > 1` also keeps each prompt's reference a *sample* rather
+than a point; with one render per prompt the local MMD degenerates toward per-prompt regression
+and diversity collapses.
+
+| | paper | this fork |
+|---|---:|---:|
+| COCO block | 248,349 (82,783 × top-3) | **331,132** (82,783 × top-4) |
+| GenEval block | 53,800 | *omitted* |
+| total | 302,149 | 331,132 |
+
+`KEEP=4` rather than 3 because all 24 candidates are rendered either way — keeping a fourth
+costs no extra compute, and it partly offsets the omitted GenEval block. That block is skipped
+because it needs the external `djghosh13/geneval` mmdet scorer, and the repo's own reported
+numbers do not show it moving GenEval much (0.803 with it vs 0.805 without, from two different
+in-repo sources — suggestive, not conclusive).
+
+**Reusable from upstream's release:** the SigLIP2 τ(c) table — its first 82,783 rows are the
+COCO captions, row-aligned to `coco_pairs.npz`, verified by re-encoding (matched-row cosine
+0.99998, off-diagonal max 0.87). The pipeline slices it instead of running the text tower.
+
+---
+
+## Pipeline
 
 ```bash
-pip install -e .            # torch, timm, open_clip, transformers, diffusers, ...
-# DreamSim (held-in encoder, required for eval-imagenet): pip install dreamsim   (or: pip install -e .[encoders])
-# FLUX.2 path also needs Black Forest Labs' `flux2` package (https://github.com/black-forest-labs/flux2 --
-#   clone it and point FLUX2_SRC at its `src/`), the klein-4B + AE base weights, and a newer transformers
-#   (separate env). See docs/flux_reference.md for the full FLUX.2 setup.
+bash scripts/setup_env.sh                                   # conda env (py3.12 + torch 2.8)
+bash scripts/download_all.sh --root /data/<you>/rdm-sets    # ~50 GB of weights + COCO
+source /data/<you>/rdm-sets/env.sh
+bash scripts/preprocess_all.sh                              # build what nobody hosts
+GPUS=2 bash scripts/train_sw_lmmd.sh configs/sw_lmmd_h100_2gpu.yaml
 ```
+
+`scripts/README.md` documents each script. Preprocessing is three resumable steps:
+
+| step | produces | measured on 1× RTX 4090 |
+|---|---|---|
+| `preprocess_01_ctx.sh` | Qwen3 generator context `(N, 48, 7680)` | ~61 GB out, single GPU |
+| `preprocess_02_render.sh` | 4-step teacher renders + PickScore curation | **3.6 img/s** → 1,986,792 renders ≈ 26 h on 6 GPUs |
+| `preprocess_03_features.sh` | per-row encoder features + the assembled store | **134–289 img/s** per encoder |
+
+Curation is **streamed** — candidates live in RAM and only the kept images are written, so the
+24-seed recipe never needs the ~795 GB that writing every candidate first would cost.
+
+---
+
+## Moving to a new machine
+
+The expensive artifact is the reference store, not the code. **Copy it rather than rebuild it**
+— it is ~30 GPU-hours to regenerate and 70 GB to move, and the 132 GB of teacher PNGs are
+*not* needed at train time (only their features are).
+
+```bash
+# ---- on the new machine ----
+git clone <this fork> && cd RDM
+bash scripts/setup_env.sh                                  # conda env: py3.12 + torch 2.8 + cu126
+bash scripts/download_all.sh --root /data/<you>/rdm-sets   # ~50 GB weights + COCO
+conda activate rdm && source /data/<you>/rdm-sets/env.sh
+```
+
+Then either **copy the store** (fast) or **rebuild it** (`bash scripts/preprocess_all.sh`, ~30 h).
+
+### Copying the store
+
+Two directories, 70 GB total:
+
+| what | size | needed at train time |
+|---|---:|:--:|
+| `sw_lmmd/reference_store/` | ~9 GB | ✅ |
+| `sw_lmmd/qwen3_ctx_coco.npy` | 61 GB | ✅ (the store symlinks it) |
+| `sw_lmmd/teacher_renders/` | 132 GB | ❌ only needed to re-extract features |
+
+```bash
+rsync -aP --exclude teacher_renders \
+    old-host:/data/old/rdm-sets/sw_lmmd/ /data/<you>/rdm-sets/sw_lmmd/
+```
+
+**Then re-point the context symlink** — `qwen_context.npy` inside the store is an absolute
+symlink written on the old host, so it arrives broken:
+
+```bash
+STORE=/data/<you>/rdm-sets/sw_lmmd/reference_store
+ln -sf /data/<you>/rdm-sets/sw_lmmd/qwen3_ctx_coco.npy "$STORE/qwen_context.npy"
+```
+
+### Verify before launching
+
+This opens the store through the real reader and checks a full window's worth of rows, which
+catches a broken symlink, a truncated copy and a row-count mismatch in one shot:
+
+```bash
+python -c "
+from rdm.sw_lmmd import ReferenceFeatureStore
+import json, os
+root = os.environ['STORE']
+names = list(json.load(open(root + '/metadata.json'))['encoder_feature_dims'])
+s = ReferenceFeatureStore(root, names)
+rows = s.row_order()[:1024]
+print(s.num_rows, 'rows /', s.num_prompts, 'prompts')
+for n in names:
+    print(' ', n, tuple(s.reference_joint_features(n, rows).shape))
+print(' ctx', tuple(s.generator_context(rows[:4]).shape))"
+```
+
+### Launch
+
+No YAML editing needed — the paths are overridable:
+
+```bash
+REFERENCE_ROOT=/data/<you>/rdm-sets/sw_lmmd/reference_store \
+GPUS=2 bash scripts/train_sw_lmmd.sh configs/sw_lmmd_h100_2gpu.yaml
+```
+
+`GPUS` must divide `B = 128`. `FSDP=1` if the card cannot hold the training state,
+`MICRO_BATCH=<n>` to trade throughput for memory, `STEPS=<n>` for a short gate run. The
+preflight prints the resolved window, batching, memory estimate and store path before
+torchrun starts.
+
+### What must match, and what need not
+
+- **Must:** `ctx_len` (48) between the store and `flux_ctx_len` at eval — the student would
+  otherwise be evaluated at a sequence geometry it never trained on. The store's
+  `metadata.json` records it along with `row_order_hash`.
+- **Need not:** GPU count, GPU model, micro-batch. World-size parity is a tested property, so
+  a 2-GPU run and a 32-GPU run optimize the same objective.
+- **Watch:** `HF_HOME` must be the *parent* of the hub cache holding the blobs —
+  `flux_generator.py::_hub_root()` reads `HF_HOME` alone and ignores `HF_HUB_CACHE`. The
+  generated `env.sh` keeps them consistent; a stray `HF_HUB_CACHE` in your shell profile is the
+  usual way this breaks.
+
+---
+
+## Hardware
+
+`shard: none` is **data parallel**: every rank holds a full copy of the training state, so
+adding GPUs buys throughput, never headroom. Per-card budget for klein-4B (3.875 B params):
+
+| | training state | per card | 80 GB | 24 GB |
+|---|---:|---:|:--:|:--:|
+| fp32 + AdamW | 62.0 GB | ~76 GB | tight | ✗ |
+| **bf16 + AdamW** | **46.5 GB** | **~66 GB** | ✅ | ✗ |
+| bf16 + 8-bit Adam | 23.2 GB | ~43 GB | ✅ | ✗ |
+| FSDP ×4 + 8-bit | 5.8 GB | ~26 GB | ✅ | tight |
+
+Note what SW-LMMD itself costs: the feature cache is `10 × 1024 × ~2700 × 4 B` ≈ **111 MB**, and
+the reference window the same. **0.36 % of the total.** SW-LMMD is a *compute* optimization —
+peak memory is dominated by the 4B model's training state either way.
+
+`FSDP=1` shards params/grads/optimizer state (ZeRO-3). Needed only where the training state does
+not fit one card; an 80 GB card is **faster without it**, since every MM-DiT block costs an extra
+all-gather. Three settings in the wrapper are load-bearing: per-block auto-wrap (a flat shard
+would all-gather all 3.9 B params at once), `reduce_dtype=float32` (bf16 gradient reduction
+loses precision across thousands of values), and `FULL_STATE_DICT` (the default writes per-rank
+shards no evaluator can load). Gradient clipping is FSDP-aware — plain `clip_grad_norm_` would
+compute each rank's *shard* norm and silently rescale the step.
+
+---
 
 ## Layout
 
 ```
-rdm/compare/         the comparison axis: kernels, Nyström, the iRDM loss + the 6 ablation distances
-rdm/representation/  the 14-encoder battery (Table 5), generators (pMF-H, FLUX.2), the joint feature
-rdm/refprep/         the offline frozen reference precompute (the heavy one-time compute)
-rdm/train/           the loop, gradient caching, the PID-Lagrangian controller
-rdm/eval/            off-objective metrics: SW_r14 (primary), MMDr14, GenEval, PickScore
-rdm/toy/             the spiral diagnostics (Fig. 3) and the batch / distance ablations
-configs/  scripts/  tests/  reproduce.py
+rdm/sw_lmmd/          this fork's method
+  window_schedule.py    overlapping windows over a seeded permutation (+ the overlap assertion)
+  cache.py              cross-step generated-feature cache, per-row ages, row-identity checks
+  local_mmd.py          exact biased local MMD + the active-only force
+  sharding.py           per-row noise, contiguous partition, detached all-gather
+  reference_store.py    mmap row-addressed reference (sharded ctx, row→prompt indirection)
+  trainer.py            bootstrap → GradCache two-pass → force → reduce → slide
+  refresh.py            staleness probe and refresh
+  launch.py             config → objects, training loop, entry point
+
+rdm/compare/          upstream: kernels, Nyström, the iRDM loss + ablation distances
+rdm/representation/   upstream: the 14-encoder battery, generators (pMF-H, FLUX.2), joint feature
+rdm/train/            upstream: the iRDM loop, GradCache (reused verbatim), PID controller
+rdm/eval/             upstream: SW_r14, MMDr14, GenEval, PickScore
+scripts/              setup → download → preprocess → train
 ```
 
-## Data
+---
 
-Datasets are never fetched for you — you point the pipeline at images already on disk. Only
-the ImageNet path is needed for the headline ImageNet result.
+## Status
 
-- **ImageNet-256** — an `ImageFolder`-style tree (flat or class-nested) for train and val.
-  Used only by the reference precompute and by evaluation, never by the training loop itself
-  (which consumes the frozen banks). Pass the roots via `IMAGENET_TRAIN` / `IMAGENET_VAL`.
-- **COCO** (FLUX text-to-image only) — download train2014, build the canonical pairing, then
-  build the joint reference pack and the Qwen3 text context. The full pipeline (with commands)
-  is in **`docs/flux_reference.md`**; everything except the image download is in-repo and
-  runs on one GPU.
-- **Eval-only prompt assets** (FLUX) — the GenEval (553) and Pick-a-Pic (499) prompts are
-  **bundled** at `assets/geneval_prompts.jsonl` / `assets/pickapic_test_prompts.jsonl`
-  (see `assets/README.md`); each prompt's FLUX.2 context is encoded on the fly at eval time.
-  GenEval *scoring* also needs a local clone of the official scorer.
+| | |
+|---|---|
+| method layer (schedule, cache, force, sharding, store, trainer) | ✅ implemented, 124 tests |
+| force identity + world-size parity | ✅ proven |
+| FSDP, 8-bit Adam, configs for 4090 / 2×H100 / 8×H100 | ✅ written, arithmetic checked by test |
+| reference store | ⏳ building (~30 h) |
+| **any run on the real 4B model** | ❌ **never executed** |
+| semantic row-alignment check on image features | ❌ needs the store |
+| GenEval reference block | ❌ needs the external mmdet scorer |
 
-## Quickstart
+The first real run is an integration gate, not a training run. The likeliest failures are dtype
+consistency under bf16, the activation estimate (the one term in the memory table that is
+estimated rather than computed), and encoder behaviour on bf16 inputs.
 
-```bash
-# Self-contained spiral diagnostic (no data/weights): Fig. 3
-python reproduce.py fig3 --smoke         # ~5 s wiring check; drop --smoke for the real figure
+---
 
-# Download the released pMF-H generator + warm the encoder cache
-python scripts/download_checkpoints.py --pmfh --warm-encoders
+## Attribution
 
-# Build the frozen reference over your ImageNet roots (one-time, heavy), then sanity-check
-IMAGENET_TRAIN=/data/imagenet/train IMAGENET_VAL=/data/imagenet/val bash scripts/run_refprep.sh
-python scripts/check_artifacts.py configs/imagenet.yaml
-
-# Post-train one-step ImageNet (8 GPU) and evaluate (SW_r14 + MMDr14 + off-objective PickScore)
-GPUS=8 bash scripts/train.sh configs/imagenet.yaml
-python reproduce.py eval-imagenet
-```
-
-## Released checkpoints
-
-Two one-step generators are published; both are drop-in `load_from` checkpoints that the eval
-configs already point at. **`docs/evaluating_released_checkpoints.md`** is the full download → score
-recipe (env, the external GenEval scorer, the ImageNet eval banks, expected numbers).
-
-> The released FLUX geALLcoco **s180** checkpoint scores **GenEval 0.826**; its reference mix is
-> partly in-distribution (see the doc).
-> The FLUX student weights are a derivative of FLUX.2 [klein]-4B (Apache-2.0). Both checkpoint
-> repos are public; override with `--pmfh-repo` / `--flux-repo` if you re-host.
-
-```bash
-python scripts/download_checkpoints.py --flux    # FLUX.2 klein one-step student  -> GenEval + PickScore
-python reproduce.py eval-flux                                      # GenEval axis   (ctx48)
-python reproduce.py eval-flux --config configs/eval_flux_pspa.yaml # PickScore-pa   (ctx232)
-python scripts/download_checkpoints.py --pmfh    # ImageNet-256 pMF-H generator -> SW_r14 + MMDr14 + PickScore
-python reproduce.py eval-imagenet
-```
-
-| checkpoint | HF repo | access |
-|---|---|---|
-| FLUX.2 klein-4B one-step (geALLcoco s180) | [`epfl-vita/flux2-klein-1step-rdm`](https://huggingface.co/epfl-vita/flux2-klein-1step-rdm) | public |
-| ImageNet-256 pMF-H FD-SIM (σ0.7, 4k) | [`Lanl11/pMF-H-FDSIM-imagenet256-sigma07-4k`](https://huggingface.co/Lanl11/pMF-H-FDSIM-imagenet256-sigma07-4k) | public |
-
-## Evaluation is never the training objective
-
-The primary metric **SW_r14** (Sliced-Wasserstein, eq. 5) shares no machinery with the
-kernel MMD we train against, so a gain rules out reward hacking; `rdm/eval/` never imports the
-training loss path (enforced by `tests/test_offobjective_floor.py`). Four of the fourteen
-encoders are held out from training as a generalization check.
-
-## Implementation notes
-
-The paper and this release are consistent; the code is authoritative for exact values. A few
-choices worth knowing:
-
-1. **ImageNet learning rate `1.6e-6`** at N = 5120.
-2. **The within-batch repulsion is the biased MMD²** — the `i = i` diagonal is included and the
-   sum is divided by `N²` (not the unbiased off-diagonal U-statistic).
-3. **The FLUX joint feature** concatenates each battery encoder's image feature with a frozen
-   SigLIP2 **text** embedding τ(c): `Φ(x,c) = [φ(x) | β·τ(c)]` (the SigLIP image tower is not used).
-4. **The Nyström attraction** ships in the precomputed-coefficient form `k_gr = mean_i k(g_i, Z)·α`
-   with `α = K_ZZ⁻¹ μ̄` (algebraically equal to eq. 3's `ψ(g)ᵀμ̄`); the toy uses the explicit eigh
-   `K_mm^{-1/2}` feature map.
-5. **MMDr14 is the arithmetic mean** over the 14 encoders (iRDM 2.69).
-6. The released **pMF-H FD-SIM** network (`rdm/representation/models/pmfh_fdsim.py`, MiT-H backbone)
-   is vendored so the checkpoint loads; it is not retrained from scratch.
-
-> **FLUX config:** `configs/flux.yaml` is the joint (concat) recipe and uses the **same training
-> parameters as the marginal run** — only `joint_enable` differs (set `false` for the Table-2
-> marginal ablation). `grad_accum` is the memory knob: keep `rollout_size` fixed and, on smaller
-> GPUs, lower `batch_size` and raise `grad_accum` (`grad_accum = rollout_size / (batch_size × world_size)`).
-
-## Citation
+This is a fork. The method, code, released checkpoints and the `configs/flux*.yaml`,
+`rdm/{compare,representation,train,eval,toy,refprep}` trees are the work of the original authors:
 
 ```bibtex
 @article{feng2026irdm,
@@ -160,7 +351,12 @@ choices worth knowing:
 }
 ```
 
-MIT (Copyright 2026 Lan Feng). Third-party vendored/referenced components (FD-Loss networks, the
-tf-compat Inception encoder, FLUX.2) and their licenses are listed in `THIRD_PARTY.md`. See
-`docs/reproduction_map.md` for the artifact → command → paper-table map and `docs/method_notes.md`
-for the design log and pitfalls.
+[Project page](https://alan-lanfeng.github.io/rdm/) · [arXiv](https://arxiv.org/abs/2607.02375) ·
+[Checkpoints](https://huggingface.co/epfl-vita/flux2-klein-1step-rdm)
+
+Upstream docs are preserved under `docs/` — `reproduction_map.md` (artifact → command → paper
+table), `flux_reference.md` (the FLUX reference build), `flux_geall_assets.md` (the headline
+reference spec), `method_notes.md` (design log and pitfalls).
+
+MIT (Copyright 2026 Lan Feng). Vendored third-party components and their licenses are in
+`THIRD_PARTY.md`.
