@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Large artifacts (downloaded / precomputed, never committed)
+checkpoints/
+work_dirs/
+data/fid_stats/
+data/imagenet/
+data/coco/
+*.pt
+*.pth
+*.npy
+*.npz
+*.safetensors
+
+# Outputs (generated samples, work-dir plots) -- but DO ship the paper figures
+*.png
+*.pdf
+!figures/
+!figures/*.png
+!figures/*.pdf
+reports/
+wandb/
+
+# Internal / experiment-only leftovers -- NEVER publish (hardcode cluster paths + private assets)
+DEPLOYMENT_TEST_NOTES.md
+configs/*_kuma*.yaml
+configs/eval_flux_*_s20*.yaml
+assets/pickapic_train_prompts.jsonl
+
+# OS / editor
+.DS_Store
+*.swp
