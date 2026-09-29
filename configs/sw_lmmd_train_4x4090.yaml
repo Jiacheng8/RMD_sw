@@ -1,0 +1,57 @@
+# SW-LMMD training on 4 x RTX 4090 (24 GB, no NVLink).
+#
+# Launch from the repo root (conda activate rdm && source /data/thor/jiacheng/rdm-sets/env.sh):
+#   CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 -m rdm.sw_lmmd.launch \
+#       configs/sw_lmmd_train_4x4090.yaml
+# Run it first as the 20-step memory/speed gate:
+#   ... configs/sw_lmmd_train_4x4090.yaml --set steps=20 --set save_freq=10
+# Exactly 4 ranks: B=128 must divide by the world size (6 does not; 2 or 8 would).
+#
+# Only the machine (`memory:` and the paths) differs from the method in sw_lmmd_flux.yaml;
+# tests/test_sw_lmmd_fsdp.py checks that the sharded path trains the same weights as the
+# unsharded one.
+#
+# klein-4B's training state does not fit a 24 GB card whole, so FSDP shards it 4 ways with one
+# MM-DiT block per unit. Per card:
+#
+#   fp32 master params 3.9 + fp32 grads 3.9 + 8-bit AdamW moments 1.9      =  9.7 GB
+#   root unit (embedders / modulations) + gathered block(s), bf16           = ~1 GB
+#   3 encoders in bf16 (dinov3_l + siglip2 + aimv2_huge)                    =  2.6 GB
+#   VAE + activations (micro_batch 1, per-block checkpointing)              = ~3-5 GB  [ESTIMATE]
+#   ------------------------------------------------------------------------------------
+#                                                                             ~17-19 GB / 24 GB
+#
+# Loading briefly holds the whole fp32 model (15.5 GB) on each card before FSDP shards it; the
+# encoders load only after that. param_dtype stays fp32 because bf16 storage would round away
+# 96% of the updates at this lr (see rdm/sw_lmmd/config.py); the all-gathers run in bf16
+# (compute_dtype), which halves the PCIe traffic.
+#
+# Throughput is bound by communication: every micro-batch all-gathers the model and
+# reduce-scatters fp32 gradients over PCIe, 32 times per step. The gate measures the real
+# seconds/step. If it also shows memory headroom, --set memory.micro_batch=2 (grad_accum 16)
+# halves that traffic without changing the gradient.
+extends: sw_lmmd_flux.yaml
+exp_name: sw-lmmd-flux-4x4090
+
+reference_root: /data/thor/jiacheng/rdm-sets/sw_lmmd/reference_store
+output_dir: /data/thor/jiacheng/rdm-sets/sw_lmmd/work_dirs   # "/" has ~37 GB free: keep ckpts off it
+
+memory:
+  shard: fsdp                 # ZeRO-3 over the 4 ranks
+  grad_reduce: none           # FSDP's reduce-scatter already averages -- see MemoryPolicy
+  optimizer: adamw8bit        # 31 GB of fp32 moments -> 7.8 GB in total, 1.9 GB per rank
+  param_dtype: fp32           # master weights (sharded)
+  compute_dtype: bf16         # dtype FSDP all-gathers in for forward/backward
+  battery_bf16: true
+  micro_batch: 1              # -> grad_accum = 128 / (4 * 1) = 32
+  encoder_offload: false
+
+# Start narrow (spec sec. 14.1): verify the loop on three encoders before the full battery.
+encoders: [dinov3_l, siglip2, aimv2_huge]
+
+steps: 2000
+save_freq: 250                # weights-only fp32 checkpoints, 15.5 GB each -> 8 over the run
+monitor_every: 1
+probe_every: 10               # staleness probe cadence (0 = follow cache.refresh_every_windows)
+save_cache: false             # a resume re-bootstraps the window
+save_optimizer: false         # under FSDP it would be rank 0's shard only, so it is refused

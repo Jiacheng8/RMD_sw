@@ -51,10 +51,17 @@ def cache_from_config(cfg) -> CacheConfig:
 def memory_from_config(cfg) -> MemoryPolicy:
     raw = _block(cfg, "memory")
     dtype = _DTYPES.get(str(raw.pop("param_dtype", "fp32")).lower(), torch.float32)
+    compute = raw.pop("compute_dtype", None)
     policy = MemoryPolicy(param_dtype=dtype,
+                          compute_dtype=None if compute is None else _DTYPES[str(compute).lower()],
                           **{k: v for k, v in raw.items()
                              if k in MemoryPolicy.__dataclass_fields__})
     policy.validate()
+    if policy.param_dtype != torch.float32:
+        logger.warning("[sw_lmmd] param_dtype=%s stores the weights the optimizer updates in low "
+                       "precision: an AdamW step smaller than half a ULP rounds to nothing (96%% "
+                       "of klein-4B's weights at lr 2.83e-6 in bf16). Prefer fp32 master weights.",
+                       policy.param_dtype)
     return policy
 
 
@@ -72,21 +79,26 @@ def resolve_batching(cfg, policy: MemoryPolicy, window: WindowConfig,
             "max_cache_age": window.max_age_steps}
 
 
-def wrap_fsdp(model, policy: MemoryPolicy):
+def wrap_fsdp(model, policy: MemoryPolicy, device="cuda"):
     """Shard params / grads / optimizer state across ranks (ZeRO-3). Returns the wrapper.
 
-    Needed only where the 46.5 GB training state does not fit one card (a 24 GB 4090); an
-    80 GB card runs faster without it, since every transformer block costs an extra
-    all-gather. Three settings here are load-bearing rather than cosmetic:
+    Needed only where the training state does not fit one card (a 24 GB 4090); an 80 GB card
+    runs faster without it, since every transformer block costs an extra all-gather. Four
+    settings here are load-bearing rather than cosmetic:
 
-    * **per-block wrapping.** Sharding the model as one flat unit would all-gather all 3.9 B
-      parameters at once, which defeats the point. The auto-wrap policy shards each MM-DiT
-      block, so only one block is ever materialized.
-    * **``reduce_dtype=float32``.** With bf16 parameters the gradient reduce-scatter would
-      otherwise accumulate in bf16's 7 mantissa bits across thousands of values. The parameters
-      stay bf16; only the reduction is promoted.
+    * **per-block units.** ``model.fsdp_unit_types()`` names the MM-DiT block classes, so each
+      block is one unit and only one is materialized at a time; the rest (embedders,
+      modulations, final layer -- ~0.2 B params) is the root unit. FSDP gathers a unit only
+      when its ``forward`` runs, which is why :func:`shard_generator` must also re-point the
+      generator at the wrapper.
+    * **fp32 master shards, ``compute_dtype`` gathers.** The shards keep ``param_dtype`` for
+      the optimizer; forward/backward see ``compute_dtype`` copies, halving all-gather traffic.
+      Root inputs are not cast, so the latent noise stays fp32 exactly as without FSDP.
+    * **``reduce_dtype=float32``.** The gradient reduce-scatter accumulates in fp32 rather than
+      in bf16's 8 significant bits across thousands of values.
     * **full state dict.** FSDP's default ``state_dict`` is per-rank shards, which no evaluator
-      can load. This makes checkpoints ordinary whole-model files.
+      can load. This makes checkpoints ordinary whole-model files -- and makes ``state_dict()``
+      a collective that every rank must call (see :func:`train`).
 
     The caller must also set ``grad_reduce='none'``: FSDP's reduce-scatter already averages, so
     the trainer's manual all-reduce would average a second time. ``MemoryPolicy.validate``
@@ -96,23 +108,44 @@ def wrap_fsdp(model, policy: MemoryPolicy):
 
     from torch.distributed.fsdp import FullStateDictConfig, FullyShardedDataParallel as FSDP
     from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictType
-    from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+    from torch.distributed.fsdp.wrap import ModuleWrapPolicy, size_based_auto_wrap_policy
 
-    logger.info("[sw_lmmd] FSDP: sharding params/grads/optimizer state (param_dtype=%s, "
-                "reduce_dtype=fp32)", policy.param_dtype)
+    unit_types = model.fsdp_unit_types() if hasattr(model, "fsdp_unit_types") else None
+    auto_wrap = ModuleWrapPolicy(unit_types) if unit_types else \
+        functools.partial(size_based_auto_wrap_policy, min_num_params=int(1e7))
+    compute_dtype = policy.compute_dtype or policy.param_dtype
+    device = torch.device(device)
+    logger.info("[sw_lmmd] FSDP: sharding params/grads/optimizer state (master=%s, "
+                "compute=%s, reduce=fp32, units=%s)", policy.param_dtype, compute_dtype,
+                sorted(t.__name__ for t in unit_types) if unit_types else "size>=1e7")
     wrapped = FSDP(
         model,
         sharding_strategy=ShardingStrategy.FULL_SHARD,               # ZeRO-3
-        auto_wrap_policy=functools.partial(size_based_auto_wrap_policy,
-                                           min_num_params=int(1e7)),
-        mixed_precision=MixedPrecision(param_dtype=policy.param_dtype,
+        auto_wrap_policy=auto_wrap,
+        mixed_precision=MixedPrecision(param_dtype=compute_dtype,
                                        reduce_dtype=torch.float32,
-                                       buffer_dtype=policy.param_dtype),
-        device_id=torch.cuda.current_device(),
+                                       cast_forward_inputs=False,
+                                       cast_root_forward_inputs=False),
+        device_id=device,
         use_orig_params=True,                 # keeps `model.parameters()` usable by the optimizer
     )
     FSDP.set_state_dict_type(wrapped, StateDictType.FULL_STATE_DICT,
-                             FullStateDictConfig(offload_to_cpu=True, rank0_only=True))
+                             FullStateDictConfig(offload_to_cpu=device.type == "cuda",
+                                                 rank0_only=True))
+    return wrapped
+
+
+def shard_generator(generator, model, policy: MemoryPolicy, device="cuda"):
+    """FSDP-wrap ``model`` and point ``generator`` at the wrapper. Returns it (None if unsharded).
+
+    The re-point is the load-bearing half: FSDP gathers the root unit only inside the wrapper's
+    ``forward``, so a generator still holding the inner module computes on the bare 1-D shards
+    and fails at the first matmul.
+    """
+    if policy.shard != "fsdp":
+        return None
+    wrapped = wrap_fsdp(model, policy, device)
+    generator.model = wrapped
     return wrapped
 
 
@@ -161,6 +194,9 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
                                      window_size=window.size, stride=window.stride,
                                      cyclic=window.cyclic)
     generator, model = build_generator_from_config(cfg, device, param_dtype=policy.param_dtype)
+    # Shard before the battery loads: until FSDP keeps only this rank's 1/world, every rank
+    # holds the whole fp32 model (15.5 GB), which leaves a 24 GB card no room for encoders.
+    clip_module = shard_generator(generator, model, policy, device)
 
     battery = Battery([by_name(n) for n in names], device=device)
     if policy.battery_bf16:
@@ -168,7 +204,6 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
             if not getattr(enc, "has_logits", False):
                 enc.to(torch.bfloat16)
 
-    clip_module = wrap_fsdp(model, policy) if policy.shard == "fsdp" else None
     noise_shape = (model.in_channels, model.input_size, model.input_size) \
         if getattr(cfg, "mode", "flux") == "flux" else \
         (3, getattr(cfg, "img_size", 256), getattr(cfg, "img_size", 256))
@@ -185,13 +220,17 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
         cache_cfg=cache_from_config(cfg), clip_module=clip_module, device=device)
 
 
-def train(cfg, device: str = "cuda") -> SWLMMDTrainer:
+def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SWLMMDTrainer:
     """Bootstrap, then run ``cfg.steps`` sliding-window updates with drift control.
 
     The loop owns three things the trainer deliberately does not: the staleness policy (probe,
     then refresh on a schedule or a drift trigger), the machine-readable log, and checkpoints.
     Keeping them out of :meth:`SWLMMDTrainer.step` is what lets the method layer stay testable
-    without a filesystem or a clock.
+    without a filesystem or a clock. ``trainer`` injects a prebuilt one (the FSDP test drives
+    this loop with a tiny model); by default it is built from ``cfg``.
+
+    Checkpoints are weights-only unless ``save_optimizer: true`` (nothing resumes from the
+    optimizer state yet, and for fp32 AdamW it is 31 GB per save).
     """
     import json
     import os
@@ -200,12 +239,27 @@ def train(cfg, device: str = "cuda") -> SWLMMDTrainer:
     from ..utils.distributed import is_main_process
     from .refresh import probe_drift, refresh_retained, should_refresh
 
-    trainer = build_trainer(cfg, device=device)
+    trainer = trainer if trainer is not None else build_trainer(cfg, device=device)
+    save_cache = bool(getattr(cfg, "save_cache", False))
+    save_optimizer = bool(getattr(cfg, "save_optimizer", False))
+    if save_optimizer and trainer.clip_module is not None:
+        raise ValueError("save_optimizer under FSDP would store only rank 0's optimizer shard, "
+                         "which cannot resume anything; leave it false")
+    save_freq = int(getattr(cfg, "save_freq", 50))
     cache_cfg = cache_from_config(cfg)
     out_dir = os.path.join(getattr(cfg, "output_dir", "./work_dirs"),
                            getattr(cfg, "exp_name", "sw-lmmd"))
     os.makedirs(out_dir, exist_ok=True)
     jsonl = open(os.path.join(out_dir, "train_log.jsonl"), "a") if is_main_process() else None
+
+    def checkpoint():
+        # EVERY rank builds the state: under FSDP the full state dict is a collective gather,
+        # and a rank-0-only call blocks until the NCCL timeout. Only rank 0 writes it.
+        state = trainer.state_dict(with_cache=save_cache, with_optimizer=save_optimizer)
+        if is_main_process():
+            path = os.path.join(out_dir, f"step_{trainer.step_idx:07d}.pth")
+            torch.save(state, path)
+            logger.info("[sw_lmmd] checkpoint -> %s", path)
 
     t0 = time.time()
     logger.info("[sw_lmmd] bootstrap ...")
@@ -237,15 +291,12 @@ def train(cfg, device: str = "cuda") -> SWLMMDTrainer:
                             logs["cache_max_age"], logs["seconds"])
             jsonl.write(json.dumps(logs) + "\n")
             jsonl.flush()
-            if trainer.step_idx % int(getattr(cfg, "save_freq", 50)) == 0:
-                path = os.path.join(out_dir, f"step_{trainer.step_idx:07d}.pth")
-                torch.save(trainer.state_dict(with_cache=bool(getattr(cfg, "save_cache", False))),
-                           path)
-                logger.info("[sw_lmmd] checkpoint -> %s", path)
+        if trainer.step_idx % save_freq == 0:
+            checkpoint()
 
+    if trainer.step_idx % save_freq:              # the final step, unless it was just saved
+        checkpoint()
     if is_main_process():
-        torch.save(trainer.state_dict(with_cache=bool(getattr(cfg, "save_cache", False))),
-                   os.path.join(out_dir, f"step_{trainer.step_idx:07d}.pth"))
         jsonl.close()
         logger.info("[sw_lmmd] done: %d steps in %.2f h", trainer.step_idx,
                     (time.time() - t0) / 3600)

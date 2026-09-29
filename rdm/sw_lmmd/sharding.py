@@ -111,10 +111,17 @@ def all_reduce_mean_(tensor: torch.Tensor) -> torch.Tensor:
     return tensor
 
 
-def reduce_scalar(value: float, device="cpu") -> float:
-    """Average a python scalar across ranks (per-rank force values differ by construction)."""
+def reduce_scalar(value: float, device=None) -> float:
+    """Average a python scalar across ranks (per-rank force values differ by construction).
+
+    The carrier tensor goes where the process group has a transport: NCCL has none for CPU
+    tensors ("No backend type associated with device type cpu"), so under NCCL it lives on the
+    current CUDA device; gloo keeps it on the CPU.
+    """
     if not is_dist():
         return float(value)
+    if device is None:
+        device = "cuda" if dist.get_backend() == "nccl" else "cpu"
     t = torch.tensor([float(value)], dtype=torch.float64, device=device)
     all_reduce_mean_(t)
     return float(t.item())

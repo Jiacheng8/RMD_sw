@@ -69,7 +69,10 @@ class Flux2AdapterModel(nn.Module):
     def __init__(self, variant: str = "klein-4b", image_resolution: int = 512,
                  checkpoint_path: str | None = None, flux2_src: str | None = None,
                  param_dtype: torch.dtype = torch.float32, gradient_checkpointing: bool = False,
-                 guidance: float = 1.0, compile_blocks: bool = False):
+                 guidance: float = 1.0, compile_blocks: bool = False,
+                 model: nn.Module | None = None):
+        """``model``: a prebuilt ``Flux2`` to wrap instead of loading the klein-4B weights (the
+        FSDP test uses a tiny one); ``checkpoint_path`` is ignored when it is given."""
         super().__init__()
         if variant != "klein-4b":
             raise NotImplementedError(f"only klein-4b supported (got {variant})")
@@ -84,19 +87,25 @@ class Flux2AdapterModel(nn.Module):
             raise ValueError(f"image_resolution {self.image_resolution} must be a multiple of "
                              f"{FLUX2_VAE_DOWNSAMPLE}")
 
-        params = Klein4BParams()
-        assert params.use_guidance_embed is False, "klein-4b is guidance-distilled"
-        assert params.in_channels == FLUX2_LATENT_CHANNELS
-        weight_path = checkpoint_path or _resolve_hf_file(_KLEIN4B_REPO, _KLEIN4B_FILE)
-        logger.info("[flux2] loading klein-4b MM-DiT from %s", weight_path)
-        from safetensors.torch import load_file as load_sft
+        if model is None:
+            params = Klein4BParams()
+            assert params.use_guidance_embed is False, "klein-4b is guidance-distilled"
+            assert params.in_channels == FLUX2_LATENT_CHANNELS
+            weight_path = checkpoint_path or _resolve_hf_file(_KLEIN4B_REPO, _KLEIN4B_FILE)
+            logger.info("[flux2] loading klein-4b MM-DiT from %s", weight_path)
+            from safetensors.torch import load_file as load_sft
 
-        with torch.device("meta"):
-            model = Flux2(params).to(torch.bfloat16)
-        sd = load_sft(weight_path, device="cpu")
-        model.load_state_dict(sd, strict=True, assign=True)
-        del sd
+            with torch.device("meta"):
+                model = Flux2(params).to(torch.bfloat16)
+            sd = load_sft(weight_path, device="cpu")
+            model.load_state_dict(sd, strict=True, assign=True)
+            del sd
         self.model = model.to(dtype=param_dtype)
+        # flux2's blocks have no ``forward``, only ``forward_kv_extract``. Route ``__call__`` to it
+        # so ``_run_dit`` can call each block as a module: FSDP gathers a unit's parameters only
+        # when its ``forward`` runs, and a direct method call would compute on the bare shards.
+        for block in (*self.model.double_blocks, *self.model.single_blocks):
+            block.forward = block.forward_kv_extract
 
         from flux2 import sampling as _flux2_sampling
         self._batched_prc_img = _flux2_sampling.batched_prc_img
@@ -117,6 +126,10 @@ class Flux2AdapterModel(nn.Module):
     def device(self) -> torch.device:
         return next(self.model.parameters()).device
 
+    def fsdp_unit_types(self) -> set:
+        """The MM-DiT block classes -- FSDP's shard units, so one block is gathered at a time."""
+        return {type(b) for b in (*self.model.double_blocks, *self.model.single_blocks)}
+
     def _run_dit(self, x, x_ids, ctx, ctx_ids, t_vec):
         """Faithful re-implementation of ``flux2.model.Flux2.forward`` (no-ref path) with
         optional per-block gradient checkpointing."""
@@ -132,16 +145,17 @@ class Flux2AdapterModel(nn.Module):
         pe_ctx = m.pe_embedder(ctx_ids)
         use_ckpt = self.gradient_checkpointing and torch.is_grad_enabled()
 
+        # Blocks are called as modules (``forward`` is ``forward_kv_extract``, see __init__).
         for block in m.double_blocks:
             if use_ckpt:
                 def _dbl(_img, _txt, _block=block):
-                    o_img, o_txt, _ = _block.forward_kv_extract(
+                    o_img, o_txt, _ = _block(
                         _img, _txt, pe_x, pe_ctx, double_block_mod_img, double_block_mod_txt, 0)
                     return o_img, o_txt
                 img, txt = torch.utils.checkpoint.checkpoint(
                     _dbl, img, txt, use_reentrant=False, preserve_rng_state=False)
             else:
-                img, txt, _ = block.forward_kv_extract(
+                img, txt, _ = block(
                     img, txt, pe_x, pe_ctx, double_block_mod_img, double_block_mod_txt, 0)
 
         img = torch.cat((txt, img), dim=1)
@@ -149,12 +163,12 @@ class Flux2AdapterModel(nn.Module):
         for block in m.single_blocks:
             if use_ckpt:
                 def _sgl(_img, _block=block):
-                    o_img, _ = _block.forward_kv_extract(_img, pe, single_block_mod, num_txt_tokens, 0)
+                    o_img, _ = _block(_img, pe, single_block_mod, num_txt_tokens, 0)
                     return o_img
                 img = torch.utils.checkpoint.checkpoint(
                     _sgl, img, use_reentrant=False, preserve_rng_state=False)
             else:
-                img, _ = block.forward_kv_extract(img, pe, single_block_mod, num_txt_tokens, 0)
+                img, _ = block(img, pe, single_block_mod, num_txt_tokens, 0)
 
         img = img[:, num_txt_tokens:, ...]
         return m.final_layer(img, vec)
@@ -183,6 +197,12 @@ class Flux2AdapterModel(nn.Module):
             x = x + (t_prev - t_curr) * pred
         from einops import rearrange
         return rearrange(x, "b (h w) c -> b c h w", h=H, w=W)
+
+    def forward(self, noise: torch.Tensor, condition, sampling_args: dict | None = None) -> torch.Tensor:
+        """:meth:`sample_images_with_grad` as the module's forward. Under FSDP this is the root
+        unit's entry point: it gathers the embedders, modulations and final layer, which live
+        outside the per-block units, before ``_run_dit`` touches them."""
+        return self.sample_images_with_grad(noise, condition, sampling_args or {})
 
 
 class Flux2VAETokenizer(nn.Module):
@@ -258,6 +278,8 @@ class FluxGenerator(Generator):
         self.amp_dtype = getattr(args, "amp_dtype", torch.bfloat16)
 
     def sample(self, noise: torch.Tensor, condition: Any) -> torch.Tensor:
-        with torch.autocast("cuda", enabled=self.enable_amp, dtype=self.amp_dtype):
-            latent = self.model.sample_images_with_grad(noise, condition, self.sampling_args)
+        with torch.autocast(noise.device.type, enabled=self.enable_amp, dtype=self.amp_dtype):
+            # Through __call__, not .sample_images_with_grad: when ``self.model`` is an FSDP
+            # wrapper, only its forward gathers the sharded parameters.
+            latent = self.model(noise, condition, self.sampling_args)
         return self.tokenizer.detokenize(latent)

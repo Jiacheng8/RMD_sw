@@ -89,3 +89,69 @@ def build_trainer(store_root: str, *, window: int = 16, stride: int = 4, micro_b
                             cache_cfg=CacheConfig(store_dtype=dtype),
                             device="cpu", feature_dtype=dtype, context_dtype=dtype)
     return trainer
+
+
+# ---------------------------------------------------------------------------------------------
+# Tiny REAL FLUX.2 path, for the FSDP test: the actual ``Flux2AdapterModel._run_dit`` over a
+# randomly initialized ``flux2.model.Flux2`` a few thousand parameters wide. Only the VAE and
+# the encoder battery are stubbed. fp32, since FSDP's mixed precision is part of what is tested.
+# ---------------------------------------------------------------------------------------------
+FLUX_CTX_DIM = 16         # Qwen3 context width (7680 in klein-4B)
+FLUX_CTX_LEN = 3          # context tokens (48 in the real pool)
+FLUX_LATENT = 2           # latent side -> 2x2 = 4 image tokens (32 at 512 px)
+FLUX_KEEP = 4             # reference rows per prompt, as in the real store
+
+
+def tiny_flux_adapter(gradient_checkpointing: bool = True):
+    """A real :class:`Flux2AdapterModel` around a tiny ``Flux2``; same init on every rank."""
+    from rdm.representation.generators.flux_generator import (Flux2AdapterModel,
+                                                              _ensure_flux2_importable)
+    _ensure_flux2_importable(None)
+    from flux2.model import Flux2, Klein4BParams
+
+    torch.manual_seed(0)
+    params = Klein4BParams(context_in_dim=FLUX_CTX_DIM, hidden_size=64, num_heads=2, depth=1,
+                           depth_single_blocks=2, axes_dim=[8, 8, 8, 8])
+    return Flux2AdapterModel(image_resolution=16 * FLUX_LATENT, model=Flux2(params),
+                             gradient_checkpointing=gradient_checkpointing)
+
+
+class LatentTokenizer:
+    """Stands in for the VAE: a fixed differentiable map from latents to 'pixels'."""
+
+    def detokenize(self, z: torch.Tensor) -> torch.Tensor:
+        return torch.tanh(z)
+
+
+class LatentBattery:
+    """Fixed linear read-outs of the flattened 'pixels' -> ``{name: (n, d)}``."""
+
+    def __init__(self, seed: int = 1):
+        g = torch.Generator().manual_seed(seed)
+        n_in = 128 * FLUX_LATENT * FLUX_LATENT
+        self.W = {n: torch.randn(n_in, d, generator=g) / n_in ** 0.5 for n, d in zip(NAMES, DIMS)}
+
+    def __call__(self, images, only=None):
+        x = images.flatten(1).float()
+        return {n: x @ w for n, w in self.W.items() if only is None or n in only}
+
+
+def build_flux_toy_store(root: str, num_prompts: int = 16, seed: int = 3) -> str:
+    """The real layout at toy size: ``FLUX_KEEP`` reference rows per prompt via ``prompt_ids``,
+    a prompt-indexed ``(P, L, d)`` generator context and a prompt-indexed text table."""
+    rng = np.random.default_rng(seed)
+    num_rows = num_prompts * FLUX_KEEP
+    encoder_features = {n: rng.standard_normal((num_rows, d)).astype(np.float32)
+                        for n, d in zip(NAMES, DIMS)}
+    text = rng.standard_normal((num_prompts, D_TXT)).astype(np.float32)
+    text /= np.linalg.norm(text, axis=1, keepdims=True)
+    context = rng.standard_normal((num_prompts, FLUX_CTX_LEN, FLUX_CTX_DIM)).astype(np.float32)
+    s_txt = float(median_bandwidth(torch.from_numpy(text).float()))
+    bandwidths = {n: {"sigma": float(median_bandwidth(torch.from_numpy(f).float())),
+                      "beta": float(median_bandwidth(torch.from_numpy(f).float())) / s_txt}
+                  for n, f in encoder_features.items()}
+    return write_reference_store(root, encoder_features=encoder_features, text_features=text,
+                                 context=context, bandwidths=bandwidths,
+                                 row_order=build_row_order(num_rows, seed=seed),
+                                 prompt_ids=np.arange(num_rows) // FLUX_KEEP,
+                                 extra_metadata={"reference_type": "toy-flux"})

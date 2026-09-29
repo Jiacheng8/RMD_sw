@@ -1,0 +1,54 @@
+# SW-LMMD training on 2 x H100 80GB.
+#
+# Launch from the repo root, with env.sh sourced and the reference store built
+# (scripts/preprocess_all.sh):
+#   torchrun --nproc_per_node=2 -m rdm.sw_lmmd.launch configs/sw_lmmd_train_h100_2gpu.yaml
+# Run it first as the 20-step memory/integration gate:
+#   ... configs/sw_lmmd_train_h100_2gpu.yaml --set steps=20 --set save_freq=10
+# If that machine mounts the data elsewhere, --set reference_root=... --set output_dir=...
+# (the store's qwen_context.npy is a symlink to step 01's qwen3_ctx_coco.npy -- copy both).
+#
+# Only the machine (`memory:` and the paths) differs from the method in sw_lmmd_flux.yaml.
+#
+# Memory, per card (shard: none is DATA parallel -- every rank holds the full training state):
+#
+#   fp32 master params 15.5 + fp32 grads 15.5 + 8-bit AdamW moments 7.8   = 38.8 GB
+#   bf16 weight casts autocast holds during a rollout                      =  7.8 GB
+#   3 encoders in bf16 (dinov3_l + siglip2 + aimv2_huge)                   =  2.8 GB
+#   VAE + activations (micro_batch 8, per-block checkpointing)             = ~16 GB  [ESTIMATE]
+#   ------------------------------------------------------------------------------------
+#                                                                            ~66 GB / 80 GB
+#
+# Why fp32 params and 8-bit moments rather than sw_lmmd_h100_2gpu.yaml's bf16 params: the
+# optimizer updates the stored weights, and at lr 2.83e-6 one AdamW step is below half a bf16
+# ULP for 96% of klein-4B's weights, so in bf16 they would never move. fp32 masters with fp32
+# moments would be 62 GB of state, which leaves no room for activations, so the moments go
+# 8-bit instead (bitsandbytes; the update is still computed in fp32 on the fp32 weights).
+#
+# The activation term is the one estimate. If the gate OOMs, --set memory.micro_batch=4
+# (grad_accum 8 -> 16): tests/test_sw_lmmd_trainer.py shows the gradient does not change.
+extends: sw_lmmd_flux.yaml
+exp_name: sw-lmmd-flux-h100-2gpu
+
+reference_root: /data/thor/jiacheng/rdm-sets/sw_lmmd/reference_store
+output_dir: /data/thor/jiacheng/rdm-sets/sw_lmmd/work_dirs
+
+memory:
+  shard: none                 # 38.8 GB of state fits one 80 GB card; no sharding needed
+  grad_reduce: mean           # no DDP/FSDP wrapper -> the trainer reduces, exactly once
+  optimizer: adamw8bit        # needs bitsandbytes (pip install bitsandbytes)
+  param_dtype: fp32           # master weights -- see above
+  battery_bf16: true          # the kernels upcast to fp32 anyway
+  micro_batch: 8              # -> grad_accum = 128 / (2 * 8) = 8
+  encoder_offload: false
+
+# Start narrow (spec sec. 14.1): verify the loop on three encoders before the full battery
+# (step 03 extracts all ten, so widening needs no new preprocessing).
+encoders: [dinov3_l, siglip2, aimv2_huge]
+
+steps: 2000
+save_freq: 200                # weights-only fp32 checkpoints, 15.5 GB each -> 10 over the run
+monitor_every: 1
+probe_every: 10               # staleness probe cadence (0 = follow cache.refresh_every_windows)
+save_cache: false             # a resume re-bootstraps the window
+save_optimizer: false         # nothing resumes from it yet, and it would add 7.8 GB per save

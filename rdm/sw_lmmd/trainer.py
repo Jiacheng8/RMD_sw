@@ -257,15 +257,19 @@ class SWLMMDTrainer:
         return self.step_idx
 
     # ------------------------------------------------------------------ checkpointing
-    def state_dict(self, with_cache: bool = True) -> dict:
-        """Model + optimizer + schedule (+ cache). Without the cache a resume MUST re-bootstrap:
+    def state_dict(self, with_cache: bool = True, with_optimizer: bool = True) -> dict:
+        """Model + schedule (+ optimizer) (+ cache). Without the cache a resume MUST re-bootstrap:
         carrying features produced by different parameters, or by a different permutation,
-        silently trains against the wrong context."""
+        silently trains against the wrong context.
+
+        Under FSDP the model entry is a collective gather, so every rank must call this; only
+        rank 0 receives the full weights."""
         state = {"model": self.generator.model.state_dict(),
-                 "optimizer": self.optimizer.state_dict(),
                  "step": self.step_idx,
                  "schedule": self.schedule.state_dict(),
                  "world_size": get_world_size()}
+        if with_optimizer:
+            state["optimizer"] = self.optimizer.state_dict()
         if with_cache:
             state["cache"] = self.cache.state_dict()
         return state

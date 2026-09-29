@@ -86,9 +86,16 @@ class MemoryPolicy:
     silently shrink every step by a factor of the world size.
     """
 
-    shard: str = "none"                   # none | fsdp   (fsdp wiring is staged, see docs)
+    shard: str = "none"                   # none | fsdp  (see launch.wrap_fsdp)
     optimizer: str = "adamw"              # adamw | adamw8bit | adamw_offload
+    # Storage dtype of the trainable weights, i.e. what the optimizer updates. Keep fp32: at
+    # lr ~3e-6 an AdamW step is smaller than half a bf16 ULP for 96% of klein-4B's weights, so
+    # bf16 storage rounds those updates away (compute runs in bf16 under autocast regardless).
     param_dtype: torch.dtype = torch.float32
+    # FSDP only: the dtype parameters are all-gathered in for forward/backward, while the fp32
+    # shards stay the master copy. None = param_dtype. Without FSDP autocast sets the compute
+    # dtype, so this must stay None there.
+    compute_dtype: torch.dtype | None = None
     battery_bf16: bool = False            # cast the frozen ViT encoders to bf16
     encoder_offload: bool = False
     micro_batch: int = 1                  # active rows per generator forward, per rank
@@ -121,3 +128,6 @@ class MemoryPolicy:
             raise ValueError(
                 "shard='fsdp' with grad_reduce='mean' would average the parameter gradient "
                 "twice (FSDP's reduce-scatter already averages). Set grad_reduce='none'.")
+        if self.compute_dtype is not None and self.shard != "fsdp":
+            raise ValueError("compute_dtype only applies under shard='fsdp'; without FSDP the "
+                             "compute dtype is set by autocast")

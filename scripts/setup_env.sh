@@ -11,6 +11,9 @@
 # lines are then filtered out of requirements.txt so the bulk install cannot silently
 # replace that pinned build with a different CUDA variant.
 #
+# SW-LMMD training also needs bitsandbytes (the 8-bit AdamW both configs/sw_lmmd_train_*.yaml
+# use), pinned to the version verified against that torch; --no-sw-lmmd-deps skips it.
+#
 #   bash scripts/setup_env.sh                          # rdm / py3.12 / torch 2.8.0+cu126
 #   bash scripts/setup_env.sh --dry-run                # print the plan, change nothing
 #   bash scripts/setup_env.sh --name rdm312 --python 3.11
@@ -27,11 +30,13 @@ PY_VER="3.12"
 TORCH_VER="2.8.0"
 TVISION_VER="0.23.0"
 CUDA_TAG="cu126"
+BNB_VER="0.50.2"
 FORCE=0
 DRY_RUN=0
 EDITABLE=1
 FLUX2_DEPS=1
 DEV_DEPS=1
+SW_LMMD_DEPS=1
 SKIP_TORCH=0
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -52,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --no-editable) EDITABLE=0; shift ;;
     --no-flux2-deps) FLUX2_DEPS=0; shift ;;
     --no-dev-deps) DEV_DEPS=0; shift ;;
+    --no-sw-lmmd-deps) SW_LMMD_DEPS=0; shift ;;
     --skip-torch)  SKIP_TORCH=1; shift ;;
     -h|--help)     usage ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -87,6 +93,9 @@ info "python           $PY_VER"
 
 if [[ $SKIP_TORCH -eq 0 ]]; then
   info "torch            $TORCH_VER + torchvision $TVISION_VER ($CUDA_TAG)"
+fi
+if [[ $SW_LMMD_DEPS -eq 1 ]]; then
+  info "bitsandbytes     $BNB_VER (SW-LMMD 8-bit AdamW)"
 fi
 if command -v nvidia-smi >/dev/null 2>&1; then
   info "driver           $(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)"
@@ -174,6 +183,15 @@ if [[ $FLUX2_DEPS -eq 1 ]]; then
   run "${CRUN[@]}" python -m pip install fire accelerate
 fi
 
+if [[ $SW_LMMD_DEPS -eq 1 ]]; then
+  say "SW-LMMD extras"
+  info "bitsandbytes holds the AdamW moments in 8 bits (memory.optimizer: adamw8bit): 31 GB of"
+  info "fp32 moments -> 7.8 GB, what lets fp32 master weights fit an 80 GB H100 and, sharded,"
+  info "a 24 GB 4090. Pinned: $BNB_VER is the version verified with torch $TORCH_VER, and its"
+  info "torch>=2.4,<3 requirement leaves the pinned CUDA build above untouched."
+  run "${CRUN[@]}" python -m pip install "bitsandbytes==$BNB_VER"
+fi
+
 # ---------------------------------------------------------------------------
 # the repo itself
 # ---------------------------------------------------------------------------
@@ -190,8 +208,8 @@ say "Verification"
 if [[ $DRY_RUN -eq 1 ]]; then
   info "--dry-run: nothing was executed; no environment was created or modified."
 else
-  "${CRUN[@]}" python - <<'PY'
-import importlib, sys
+  SW_LMMD_DEPS=$SW_LMMD_DEPS "${CRUN[@]}" python - <<'PY'
+import importlib, os, sys
 print(f"    python           {sys.version.split()[0]}")
 ok = True
 try:
@@ -215,6 +233,15 @@ for mod in ("numpy", "scipy", "timm", "open_clip", "transformers", "diffusers",
     except Exception as e:
         ok = False
         print(f"    {mod:16s} FAILED: {type(e).__name__}")
+
+if os.environ.get("SW_LMMD_DEPS") == "1":             # required by the SW-LMMD configs
+    try:
+        import bitsandbytes as bnb
+        bnb.optim.AdamW8bit                            # the optimizer adamw8bit resolves to
+        print(f"    {'bitsandbytes':16s} {bnb.__version__}")
+    except Exception as e:
+        ok = False
+        print(f"    {'bitsandbytes':16s} FAILED: {type(e).__name__}: {e}")
 
 for mod in ("dreamsim", "wandb"):                      # optional extras
     try:
