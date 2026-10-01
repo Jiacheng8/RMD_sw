@@ -11,14 +11,16 @@
 | 预处理 01 | Qwen3 文本 context | 4090 机，1 卡 | 约 10 分钟（实测） | `qwen3_ctx_coco.npy`（61 GB） |
 | 预处理 02 | 老师 4 步出图，每 prompt 24 张，PickScore 留 4 张 | 4090 机，6 卡 | 约 31 小时（实测） | `teacher_renders/`（331,132 张 PNG） |
 | 预处理 03 | 10 个编码器提特征，组装参考库 | 4090 机，6 卡 | 0.5–1 小时（估计） | `reference_store/`（约 70 GB，含 context） |
-| 训练 gate | 20 步，检查显存和速度 | 4090 或 H100 | 实测后才知道 | 日志、1 个 checkpoint |
-| 正式训练 | 2000 步 | 4090 或 H100 | 看前几步的 s/step 估算；可断点续训 | checkpoint、`resume.pth` |
+| 训练 gate | 20 步，检查显存和速度（H100 上不需要单独跑，见 3.3） | 4090 或 H100 | 4090 每步 5.3 分钟（实测） | 日志、1 个 checkpoint |
+| 正式训练 | 2000 步 | 4090 或 H100 | 4090 约 9 天；2×H100 估计 5–9 小时（以前几步的 s/step 为准）；可断点续训 | checkpoint、`resume.pth` |
 | 评测 | GenEval + PickScore（`eval_checkpoint.sh`） | 任意 1 张空闲卡 | 每个 checkpoint 约 22 分钟（4090 实测） | `<out>/summary.json` |
 
-**当前进度（2026-09-30）**：
+**当前进度（2026-10-01）**：
 
 - 预处理 01 → 02 → 03 已全部完成（9 月 30 日 05:00，`[store] OK`）。
 - 4090 上的 20 步 gate 已跑通：约 20.7 GB/卡，每步约 5.3 分钟；算上缓存刷新，2000 步大约要 9 天。
+- 新机器的整套流程（第 3.3 节）已推送到 GitHub。在这台机器上逐段实测过：全新 conda 装环境（版本锁定）、下载、模型文件核对、参考库下载/校验/解压、context 接入、GenEval 环境（含 H100 的源码编译路径）、断点续训、评测。H100 上的显存和速度只能开跑后看。
+- 已发布的 s180 用 `eval_checkpoint.sh` 复现：GenEval 0.8238、PickScore 21.825（第 4 节）。
 - 参考库（不含 61 GB 的 context）和 `coco_pairs.npz` 已上传到 HF 私有 dataset `jiachengcui888/sw-rdm-reference-store`（主要来源，2026-10-01 实测下载、校验和解压一共不到 3 分钟），Google Drive 的 `SW-RDM/` 里也有一份作为备用。
 
 下一步要做的事：
@@ -155,10 +157,10 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 GPUS=4 bash scripts/train_sw_lmmd.sh configs/sw_lmm
 
 **租机器时确认这几项**（启动时脚本也会逐项检查）：2 × H100 **80 GB**；数据盘**至少 350 GB** 空闲；NVIDIA 驱动 ≥ 525；如果是容器，`/dev/shm` 至少 1 GB（启动容器时加 `--shm-size=16g` 或 `--ipc=host`）。
 
-**0. 先在 4090 这台机器上把代码推上去。** 新机器是 `git clone` 下来的，没有 push 的改动它拿不到：
+**0. 先在 4090 这台机器上把代码推上去。** 新机器是 `git clone` 下来的，没有 push 的改动它拿不到。现在的版本已经推送了（2026-10-01）。以后再改代码，在这台机器上这样推：这台机器的 HTTPS 方式没有 GitHub 凭据，`git push` 会认证失败，要走 SSH：
 
 ```bash
-cd /home/jiacheng/RDM && git add -A && git commit -m "..." && git push
+cd /home/jiacheng/RDM && git add -A && git commit -m "..." && git push git@github.com:Jiacheng8/RMD_sw.git main
 ```
 
 **1. 推荐顺序（在新机器上）：**
@@ -203,7 +205,7 @@ bash scripts/new_machine.sh --root /data/<你>/rdm-sets
 
 所有文件都放在 `--root` 下面：`env.sh`、`hf/`（权重）、`geneval/`（评测环境和检测器）、`sw_lmmd/{reference_store, qwen3_ctx_coco.npy, work_dirs/, logs/}`。pip 和 conda 的下载缓存也放在 `<root>/.cache/` 下。`rdm` 这个 conda 环境装在 conda 自己的 envs 目录（约 12 GB）。**磁盘预算约 315 GB**：权重约 26 GB，参考库 8.5 GB（解压时临时再多 8.5 GB），context 61 GB，GenEval 约 12 GB，缓存约 5 GB，checkpoint 每个 15.5 GB（H100 一共存 10 个，155 GB），`resume.pth` 23 GB（覆盖写入时临时 2 份）。
 
-**为什么用 HF 而不是 Drive**：同一个 9.1 GB 的 tar 包，2026-10-01 在这台机器上实测，HF 约 2 分钟，Drive 超过 2 小时。训练本身只要 5–9 小时，用 Drive 等于白白多付 2 个多小时的 H100 钱。
+**为什么用 HF 而不是 Drive**：同一个 9.1 GB 的 tar 包，2026-10-01 在这台机器上实测，HF 不到 3 分钟（含校验和解压），Drive 超过 2 小时。训练本身只要 5–9 小时，用 Drive 等于白白多付 2 个多小时的 H100 钱。
 
 **5. 常用选项：**
 
@@ -268,7 +270,16 @@ wait
 - 接着跑的部分和没中断时**逐位一致**（`tests/test_sw_lmmd_resume.py` 验证过，8-bit AdamW 在 GPU 上也验证过），所以最多损失 100 步，按估计的速度约 15–25 分钟。日志接着写在原来的 `train_log.jsonl` 里，checkpoint 编号也接着排。
 - 不用 `new_machine.sh` 的话：`RESUME_FROM=<run dir>/resume.pth ASSETS=... bash scripts/train_sw_lmmd.sh <config>`。
 
-**9. 还机器之前，先把结果拷走**：checkpoint、`train_log.jsonl`、各个 `eval_*/summary.json`，以及 `<root>/sw_lmmd/logs/`。一个 checkpoint 15.5 GB，一般只拷最好的一两个，加上所有的 summary 和日志。例如 `rclone copy $RUN gdrive:SW-RDM/runs/sw-lmmd-flux-h100-2gpu --include "train_log.jsonl" --include "eval_*/summary.json" --include "step_0002000.pth" -P`。注意从 Drive 往回下载会被限速（见上面）；如果两台机器之间能直接连通，用 `rsync -avP` 更快。
+**9. 还机器之前，先把结果拷走**：checkpoint、`train_log.jsonl`、各个 `eval_*/summary.json`，以及 `<root>/sw_lmmd/logs/`。一个 checkpoint 15.5 GB，一般只拷最好的一两个，加上所有的 summary 和日志。推荐经过 HF 私有 repo 中转，上传和之后在 4090 上下载都快。这一步要一个 **Write** token，用完可以在 HF 网站上删掉：
+
+  ```bash
+  read -rs -p "HF write token: " HF_TOKEN && export HF_TOKEN
+  PYTHONNOUSERSITE=1 conda run -n rdm --no-capture-output hf upload jiachengcui888/sw-lmmd-h100-run $RUN . \
+      --repo-type model --private --include "train_log.jsonl" --include "eval_*/summary.json" --include "step_0002000.pth"
+  unset HF_TOKEN
+  ```
+
+  回到 4090 上用 `hf download jiachengcui888/sw-lmmd-h100-run --local-dir <目录>` 取回。两台机器之间能直接连通的话，用 `rsync -avP` 也可以。Drive（rclone）也能用，但往回下载会被限速。
 
 ### 3.4 gate 要看什么
 
