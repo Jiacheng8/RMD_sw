@@ -243,14 +243,16 @@ bash scripts/new_machine.sh --root <dir> --resume                    # 训练中
 
 **7. 训练完以后评测（详见第 4 节）：**
 
-两张卡同时评测两个 checkpoint，每张卡约 21 GB 显存：
+一条命令评测这次训练的全部 checkpoint，同时测老师和已发布的 s180 作为同机基线。两张卡一直排满，最后输出一张对比表：
 
 ```bash
 R=/data/<你>/rdm-sets; RUN=$R/sw_lmmd/work_dirs/sw-lmmd-flux-h100-2gpu
-CUDA_VISIBLE_DEVICES=0 bash scripts/eval_checkpoint.sh $RUN/step_0002000.pth --root $R &
-CUDA_VISIBLE_DEVICES=1 bash scripts/eval_checkpoint.sh $RUN/step_0001800.pth --root $R &
-wait
+bash scripts/eval_run.sh $RUN --root $R --baselines
+cat $RUN/eval_summary.md
 ```
+
+- 10 个 checkpoint 加 2 个基线，按 4090 实测（22 分钟/个）推算，H100 估计每个 8–10 分钟，两张卡一共约 1 小时。80 GB 的卡可以加 `--per-gpu 2`，每张卡同时跑两个。
+- 只评其中几个：`--only 2000,1800`；只评一个：`CUDA_VISIBLE_DEVICES=0 bash scripts/eval_checkpoint.sh $RUN/step_0002000.pth --root $R`。
 
 - 第 4 阶段已经把 GenEval 装在 `<root>/geneval` 了，脚本会自己找到。如果第 4 阶段失败或者跳过了，先补装：`bash scripts/setup_geneval.sh --root <root>/geneval --prefix <root>/geneval/env`。
 - 评测要空闲的卡，训练时两张卡都被占满，所以要等训练结束再评测。
@@ -388,7 +390,24 @@ bash scripts/eval_checkpoint.sh <ckpt> --root /data/<你>/rdm-sets       # 新�
 - 所以**比较不同模型时，要用同一台机器、同一套流程渲染并打分**，不要直接拿文档里的数字去比。
 - 已发布 s180 的 checkpoint 已经下载到 HF 缓存里：`/data/hulk/jiacheng/cache/hub/models--epfl-vita--flux2-klein-1step-rdm/`。
 
-### 4.3 不用脚本、手动分步（和 4.2 等价）
+### 4.3 评测一次训练的所有 checkpoint：`eval_run.sh`
+
+```bash
+bash scripts/eval_run.sh <run dir> --root <root> [--baselines] [--only 2000,1800] [--gpus 0,1] [--per-gpu 2] [--dry-run]
+```
+
+- 找出 `<run dir>` 里所有 `step_*.pth`（不包括 `resume.pth`），从最新的开始排队。每个任务就是一次 `eval_checkpoint.sh`，单独占一张卡。哪张卡空了就接着跑下一个，直到全部跑完。
+- `--baselines`：再加上 klein-4B 老师（4 步）和已发布的 s180（公开 repo，会自动下载 15.5 GB），用来做同一台机器上的对比，放在最后跑。
+- `--gpus` 默认用所有能看到的卡（或 `CUDA_VISIBLE_DEVICES`）。`--per-gpu 2` 只允许 48 GB 以上的卡。
+- 结果都放在 run dir 里，方便一起拷走：
+  - 每个任务的结果：`eval_step_NNNNNNN/`、`eval_teacher_4step/`、`eval_s180_release/`；
+  - 每个任务的日志：`eval_logs/<名字>.log`；
+  - 汇总表：`eval_summary.md`（标出 GenEval 最高的 checkpoint）和 `eval_summary.json`。
+- 某个任务失败不影响其他任务，最后会列出失败的任务和日志路径。用同一条命令重跑，已经完成的阶段会跳过。
+- Ctrl-C 会停掉所有正在跑的评测，包括它们的子进程。
+- `--root`、`--geneval-root`、`--env`、`--no-geneval`、`--force` 会原样传给 `eval_checkpoint.sh`。
+
+### 4.4 不用脚本、手动分步（和 4.2 等价）
 
 1. 写一个评测配置，比如 `configs/eval_sw_lmmd.yaml`：
 
