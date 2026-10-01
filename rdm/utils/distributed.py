@@ -72,10 +72,17 @@ def all_reduce_mean(tensor: torch.Tensor) -> torch.Tensor:
 
 
 def setup_distributed() -> tuple[int, int, int]:
-    """Init the process group from torchrun env vars. Returns ``(rank, world_size, local_rank)``."""
+    """Init the process group from torchrun env vars. Returns ``(rank, world_size, local_rank)``.
+
+    The collective timeout is 60 min (``RDM_DIST_TIMEOUT_MIN``), not NCCL's 10: rank 0 writes
+    multi-GB checkpoints while the other ranks already wait in the next collective, and on a
+    network volume that write alone can pass 10 minutes -- the watchdog would kill the run.
+    """
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        from datetime import timedelta
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl")
+        minutes = float(os.environ.get("RDM_DIST_TIMEOUT_MIN", 60))
+        dist.init_process_group(backend="nccl", timeout=timedelta(minutes=minutes))
         return dist.get_rank(), dist.get_world_size(), local_rank
     return 0, 1, 0

@@ -14,6 +14,10 @@
 # SW-LMMD training also needs bitsandbytes (the 8-bit AdamW both configs/sw_lmmd_train_*.yaml
 # use), pinned to the version verified against that torch; --no-sw-lmmd-deps skips it.
 #
+# Every pip install after torch goes through requirements-lock.txt: the exact versions of the
+# env the results were produced with, so a new machine does not pick up a newer transformers /
+# timm / diffusers that day. --no-lock installs the newest versions instead.
+#
 #   bash scripts/setup_env.sh                          # rdm / py3.12 / torch 2.8.0+cu126
 #   bash scripts/setup_env.sh --dry-run                # print the plan, change nothing
 #   bash scripts/setup_env.sh --name rdm312 --python 3.11
@@ -24,6 +28,7 @@
 #   conda activate rdm
 #   source <assets-root>/env.sh        # written by scripts/fetch_prerequisites.py
 set -euo pipefail
+export PYTHONNOUSERSITE=1   # packages in ~/.local/lib/pythonX.Y must never shadow the conda envs'
 
 ENV_NAME="rdm"
 PY_VER="3.12"
@@ -38,9 +43,11 @@ FLUX2_DEPS=1
 DEV_DEPS=1
 SW_LMMD_DEPS=1
 SKIP_TORCH=0
+USE_LOCK=1
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REQ_FILE="$REPO_ROOT/requirements.txt"
+LOCK_FILE="$REPO_ROOT/requirements-lock.txt"
 
 usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
@@ -59,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     --no-dev-deps) DEV_DEPS=0; shift ;;
     --no-sw-lmmd-deps) SW_LMMD_DEPS=0; shift ;;
     --skip-torch)  SKIP_TORCH=1; shift ;;
+    --no-lock)     USE_LOCK=0; shift ;;
     -h|--help)     usage ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -81,6 +89,14 @@ info "conda            $(conda --version) at $CONDA_BASE"
 info "repo             $REPO_ROOT"
 [[ -f "$REQ_FILE" ]] || { echo "requirements file not found: $REQ_FILE" >&2; exit 1; }
 info "requirements     $REQ_FILE"
+PIPC=()
+if [[ $USE_LOCK -eq 1 ]]; then
+  [[ -f "$LOCK_FILE" ]] || { echo "version lock not found: $LOCK_FILE (or pass --no-lock)" >&2; exit 1; }
+  PIPC=(-c "$LOCK_FILE")
+  info "version lock     $LOCK_FILE ($(grep -c "^[A-Za-z0-9_.-]*==" "$LOCK_FILE") pins)"
+else
+  info "version lock     OFF (--no-lock): newest versions"
+fi
 
 # flux2's <3.13 cap is the binding constraint; refuse to build an env that cannot run it.
 PY_MAJOR="${PY_VER%%.*}"; PY_MINOR="${PY_VER#*.}"; PY_MINOR="${PY_MINOR%%.*}"
@@ -129,7 +145,9 @@ fi
 if [[ $ENV_EXISTS -eq 1 ]]; then
   info "exists; reusing (pass --force to rebuild from scratch)"
 else
-  run conda create -n "$ENV_NAME" "python=$PY_VER" -y
+  # conda-forge only: a fresh Miniconda (2025+) refuses the Anaconda default channels in a
+  # non-interactive create until their Terms of Service are accepted (CondaToSNonInteractiveError).
+  run conda create -n "$ENV_NAME" "python=$PY_VER" -y --override-channels -c conda-forge
 fi
 
 # `conda run` avoids needing `conda activate` inside a non-interactive shell.
@@ -147,7 +165,7 @@ else
   else
     TORCH_INDEX="https://download.pytorch.org/whl/$CUDA_TAG"
   fi
-  run "${CRUN[@]}" python -m pip install --upgrade pip
+  run "${CRUN[@]}" python -m pip install --upgrade pip "${PIPC[@]}"
   run "${CRUN[@]}" python -m pip install \
       "torch==$TORCH_VER" "torchvision==$TVISION_VER" --index-url "$TORCH_INDEX"
 fi
@@ -163,7 +181,7 @@ sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$REQ_FILE" \
   | grep -vEi '^(torch|torchvision)([[:space:]]*[<>=!~]|$)' > "$FILTERED"
 info "installing $(wc -l < "$FILTERED") requirements (torch/torchvision filtered out):"
 sed 's/^/      /' "$FILTERED"
-run "${CRUN[@]}" python -m pip install -r "$FILTERED"
+run "${CRUN[@]}" python -m pip install -r "$FILTERED" "${PIPC[@]}"
 
 # ---------------------------------------------------------------------------
 # native flux2 runtime deps not covered by requirements.txt
@@ -172,15 +190,15 @@ if [[ $DEV_DEPS -eq 1 ]]; then
   say "dev extras"
   info "pytest lives in pyproject's [dev] extra, not requirements.txt -- the verification"
   info "step and the 'pytest tests -q' below need it."
-  run "${CRUN[@]}" python -m pip install pytest
+  run "${CRUN[@]}" python -m pip install pytest "${PIPC[@]}"
 fi
 
 if [[ $FLUX2_DEPS -eq 1 ]]; then
   say "flux2 runtime deps"
   info "flux2 is used via FLUX2_SRC (path injection), NOT pip-installed: its package name is"
   info "'flux' and it hard-pins torch/transformers/safetensors, which would fight this env."
-  info "Only its missing runtime imports are installed here (unpinned)."
-  run "${CRUN[@]}" python -m pip install fire accelerate
+  info "Only its missing runtime imports are installed here."
+  run "${CRUN[@]}" python -m pip install fire accelerate "${PIPC[@]}"
 fi
 
 if [[ $SW_LMMD_DEPS -eq 1 ]]; then
@@ -189,7 +207,7 @@ if [[ $SW_LMMD_DEPS -eq 1 ]]; then
   info "fp32 moments -> 7.8 GB, what lets fp32 master weights fit an 80 GB H100 and, sharded,"
   info "a 24 GB 4090. Pinned: $BNB_VER is the version verified with torch $TORCH_VER, and its"
   info "torch>=2.4,<3 requirement leaves the pinned CUDA build above untouched."
-  run "${CRUN[@]}" python -m pip install "bitsandbytes==$BNB_VER"
+  run "${CRUN[@]}" python -m pip install "bitsandbytes==$BNB_VER" "${PIPC[@]}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -243,6 +261,25 @@ if os.environ.get("SW_LMMD_DEPS") == "1":             # required by the SW-LMMD 
         ok = False
         print(f"    {'bitsandbytes':16s} FAILED: {type(e).__name__}: {e}")
 
+if ok and torch.cuda.is_available():                   # the libraries, not just the import:
+    try:                                               # a foreign LD_LIBRARY_PATH cuDNN/cuBLAS
+        x = torch.randn(256, 256, device="cuda", dtype=torch.bfloat16)   # fails only here
+        float((x @ x).sum())
+        conv = torch.nn.Conv2d(3, 8, 3).cuda()
+        float(conv(torch.randn(1, 3, 32, 32, device="cuda")).sum())
+        print(f"    {'cuda smoke':16s} bf16 matmul + conv ok (cudnn {torch.backends.cudnn.version()})")
+        if os.environ.get("SW_LMMD_DEPS") == "1":
+            import bitsandbytes as bnb
+            p = torch.nn.Parameter(torch.randn(4096, device="cuda"))     # 4096: 8-bit moments
+            opt = bnb.optim.AdamW8bit([p], lr=1e-3)
+            p.grad = torch.randn_like(p)
+            opt.step()
+            assert opt.state[p]["state1"].dtype == torch.uint8
+            print(f"    {'bnb smoke':16s} 8-bit AdamW step ok")
+    except Exception as e:
+        ok = False
+        print(f"    {'cuda smoke':16s} FAILED: {type(e).__name__}: {e}")
+
 for mod in ("dreamsim", "wandb"):                      # optional extras
     try:
         importlib.import_module(mod)
@@ -272,10 +309,11 @@ cat <<EOF
     conda activate $ENV_NAME
 
     # 1. assets (weights, COCO, flux2 source) -- separate script, separate disk budget
-    python scripts/fetch_prerequisites.py --root /data/hulk/jiacheng/rdm_assets --dry-run
+    #    (scripts/new_machine.sh runs this and the steps below for you)
+    bash scripts/download_all.sh --root <assets-root> --dry-run
 
     # 2. point the caches + FLUX2_SRC at that root, then check flux2 resolves
-    source /data/hulk/jiacheng/rdm_assets/env.sh
+    source <assets-root>/env.sh
     python -c "import flux2; print('flux2 ok')"
 
     # 3. repo test suite (no downloaded weights needed)

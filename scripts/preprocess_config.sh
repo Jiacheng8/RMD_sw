@@ -12,9 +12,10 @@
 # Measured on this box (1x RTX 4090): render 3.6 img/s, encoders 134-289 img/s.
 
 set -euo pipefail
+export PYTHONNOUSERSITE=1   # packages in ~/.local/lib/pythonX.Y must never shadow the conda envs'
 
 # ---- where things live -------------------------------------------------------------
-export RDM_REPO="${RDM_REPO:-/home/jiacheng/RDM}"
+export RDM_REPO="${RDM_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"   # the checkout this file is in
 export ASSETS="${ASSETS:-/data/thor/jiacheng/rdm-sets}"
 export CONDA_ENV="${CONDA_ENV:-rdm}"
 

@@ -14,12 +14,13 @@ Everything this repo consumes falls into two classes:
       nothing hosts them. The script ends by printing the exact build commands, in order,
       with ``--root``-aware paths.
 
-Groups (``--group``, repeatable; default = the SW-LMMD training set = encoders flux coco flux2src):
+Groups (``--group``, repeatable; default = encoders text flux pickscore flux2src coco assets):
 
     encoders   the 10 training encoders (timm / HF weights + Inception-FID + DreamSim)
     evalenc    the 4 held-out evaluation encoders (dinov2, siglip_v1, C-RADIOv3-L, FLUX VAE)
     text       the SigLIP2 SO400M text tower that produces tau(c)  [implied by `encoders`]
     flux       FLUX.2 klein-4B MM-DiT + the AE + the Qwen3-4B text encoder (the generator)
+    pickscore  PickScore_v1 + its processor: the eval metric and the 02 render curation (3.9 GB)
     flux2src   the native Black Forest Labs ``flux2`` package (git clone -> FLUX2_SRC)
     coco       COCO train2014 images + captions (the reference/prompt source, 13.8 GB)
     assets     the authors' released reference assets (Nystrom bundles + tau(c) table, 1.3 GB)
@@ -63,6 +64,9 @@ COCO_TRAIN_IMAGES = 82783                       # expected extracted count
 INCEPTION_URL = ("https://github.com/toshas/torch-fidelity/releases/download/"
                  "v0.2.0/weights-inception-2015-12-05-6726825d.pth")
 FLUX2_GIT = "https://github.com/black-forest-labs/flux2"
+# The flux2 commit everything here was built and trained with (2026-03-12). Pinned so a new
+# machine gets the same model / text-encoder code, not whatever upstream main is that day.
+FLUX2_COMMIT = "50fe5162777813d869182b139e83b10743caef15"
 
 
 @dataclass
@@ -78,6 +82,7 @@ class Item:
     patterns: list = field(default_factory=lambda: list(WEIGHT_PATTERNS))
     note: str = ""
     gated: bool = False
+    rev: str = ""                               # git: the commit to check out
 
 
 ITEMS: list[Item] = [
@@ -109,8 +114,14 @@ ITEMS: list[Item] = [
          gated=True, note="native VAE the flux2 loader resolves; GATED repo"),
     Item("qwen3_4b",       "flux", "hf", 8.05, "Qwen/Qwen3-4B",
          note="FLUX.2 prompt encoder (bf16 build; works offline, no fp8 kernels)"),
+    # ---- PickScore: the eval metric (eval_checkpoint.sh) and the 02 render curation ----
+    Item("pickscore",      "pickscore", "hf", 3.94, "yuvalkirstain/PickScore_v1",
+         patterns=["config.json", "model.safetensors"], note="PickScore_v1 (CLIP-H)"),
+    Item("pickscore_proc", "pickscore", "hf", 0.01, "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+         patterns=["*.json", "*.txt"], note="PickScore's processor: tokenizer + image configs, no weights"),
     # ---- native flux2 package ----
-    Item("flux2src",       "flux2src", "git", 0.05, FLUX2_GIT, note="-> FLUX2_SRC"),
+    Item("flux2src",       "flux2src", "git", 0.05, FLUX2_GIT, rev=FLUX2_COMMIT,
+         note="-> FLUX2_SRC, pinned"),
     # ---- COCO source data ----
     Item("coco_train",     "coco", "url", 13.51, COCO_TRAIN_ZIP, "train2014.zip",
          note="82,783 reference images (extracted +13.5 GB)"),
@@ -128,8 +139,8 @@ ITEMS: list[Item] = [
          "model.pth", note="ImageNet pMF-H generator (ImageNet path only)"),
 ]
 
-DEFAULT_GROUPS = ["encoders", "text", "flux", "flux2src", "coco", "assets"]
-ALL_GROUPS = ["encoders", "text", "evalenc", "flux", "flux2src", "coco", "assets",
+DEFAULT_GROUPS = ["encoders", "text", "flux", "pickscore", "flux2src", "coco", "assets"]
+ALL_GROUPS = ["encoders", "text", "evalenc", "flux", "pickscore", "flux2src", "coco", "assets",
               "student", "pmfh"]
 
 
@@ -241,12 +252,29 @@ def fetch_url(item: Item, dest_dir: str) -> bool:
     return True
 
 
+def _git_head(dest: str) -> str:
+    out = subprocess.run(["git", "-C", dest, "rev-parse", "HEAD"], capture_output=True, text=True)
+    return out.stdout.strip()
+
+
 def fetch_git(item: Item, dest: str) -> bool:
     if os.path.isdir(os.path.join(dest, ".git")):
-        say(f"  ok  present {dest} (git pull to update)")
+        head = _git_head(dest)
+        if item.rev and head != item.rev:
+            say(f"  WARN {dest} is at {head[:7]}, not the pinned {item.rev[:7]}: "
+                f"git -C {dest} fetch --depth 1 origin {item.rev} && git -C {dest} checkout {item.rev}")
+        else:
+            say(f"  ok  present {dest} ({head[:7]})")
         return True
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    return run(["git", "clone", "--depth", "1", item.src, dest]) == 0
+    if run(["git", "clone", "--depth", "1", item.src, dest]) != 0:
+        return False
+    if item.rev and _git_head(dest) != item.rev:          # upstream moved on: fetch the pinned one
+        if (run(["git", "-C", dest, "fetch", "--depth", "1", "origin", item.rev]) != 0
+                or run(["git", "-C", dest, "checkout", "-q", item.rev]) != 0):
+            return False
+    say(f"  ok  {dest} at {_git_head(dest)[:7]}")
+    return not item.rev or _git_head(dest) == item.rev
 
 
 def fetch_dreamsim(cache_dir: str) -> bool:
@@ -360,7 +388,7 @@ export TORCH_HOME="$RDM_ASSETS/torch"
 export DREAMSIM_CACHE_DIR="$RDM_ASSETS/dreamsim"
 # src-layout clone: the importable package is <clone>/src/flux2, so this is <clone>/src
 export FLUX2_SRC="{flux2_src_dir(root)}"
-export PYTHONPATH="$FLUX2_SRC:${PYTHONPATH:-}"
+export PYTHONPATH="$FLUX2_SRC:${{PYTHONPATH:-}}"
 export COCO_ROOT="$RDM_ASSETS/datasets/coco"
 """
     if dry:
@@ -458,6 +486,9 @@ def main() -> int:
     ap.add_argument("--all", action="store_true", help="every group, including student/pmfh/evalenc")
     ap.add_argument("--dry-run", action="store_true", help="plan + footprint only, write nothing")
     ap.add_argument("--skip-extract", action="store_true", help="download the COCO zips but do not unzip")
+    ap.add_argument("--encoders", default=None,
+                    help="comma-separated encoder keys: fetch only these from the 'encoders' group, "
+                         "and not the implied text tower (e.g. the three a SW-LMMD config trains with)")
     ap.add_argument("--hf-cache", default=None,
                     help="adopt an existing HF hub cache instead of filling <root>/hf/hub "
                          "(e.g. a shared cache that already holds these weights)")
@@ -466,9 +497,15 @@ def main() -> int:
     root = os.path.abspath(os.path.expanduser(args.root))
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     groups = set(ALL_GROUPS if args.all else (args.group or DEFAULT_GROUPS))
-    if "encoders" in groups:
+    only_enc = [e for e in (args.encoders or "").split(",") if e]
+    known_enc = {i.key for i in ITEMS if i.group == "encoders"}
+    if set(only_enc) - known_enc:
+        ap.error(f"unknown encoder(s) {sorted(set(only_enc) - known_enc)}; known: {sorted(known_enc)}")
+    if "encoders" in groups and not only_enc:
         groups.add("text")                       # tau(c) tower is part of the training path
     plan = [i for i in ITEMS if i.group in groups]
+    if only_enc:                                 # SW-LMMD from the prebuilt store: tau is in the store
+        plan = [i for i in plan if i.group != "encoders" or i.key in only_enc]
 
     # ---- caches live under the root; set BEFORE huggingface_hub is imported ----
     # HF_HUB_CACHE / HUGGINGFACE_HUB_CACHE OVERRIDE HF_HOME. Setting HF_HOME alone is not
@@ -477,6 +514,14 @@ def main() -> int:
     inherited_hub = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
     hub_cache = os.path.abspath(os.path.expanduser(args.hf_cache)) if args.hf_cache \
         else os.path.join(root, "hf", "hub")
+    # `hf auth login` stored the token under the CURRENT HF_HOME (default ~/.cache/huggingface).
+    # huggingface_hub derives the token path from HF_HOME at import time, so the redirect below
+    # would hide it and the gated FLUX.2-dev download would fail although the user is logged in.
+    # Pin the path first (an explicit HF_TOKEN / HF_TOKEN_PATH still wins).
+    user_hf_home = os.environ.get("HF_HOME") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "huggingface")
+    os.environ.setdefault("HF_TOKEN_PATH",
+                          os.path.join(os.path.expanduser(user_hf_home), "token"))
     os.environ["HF_HOME"] = os.path.join(root, "hf")
     os.environ["HF_HUB_CACHE"] = hub_cache
     os.environ["HUGGINGFACE_HUB_CACHE"] = hub_cache

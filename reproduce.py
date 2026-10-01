@@ -64,9 +64,13 @@ def main():
             from rdm.train.references import load_text_table
             ctx_len = int(load_text_table(cfg.ctx_pool).shape[1])
         ctx_len = int(ctx_len or 48)
+        # pickscore_ctx_len lets ONE run measure both headline numbers: GenEval at the training
+        # ctx_len and PickScore-pa at 232 (48 truncates ~53 long Pick-a-Pic prompts).
+        ps_ctx_len = int(getattr(cfg, "pickscore_ctx_len", None) or ctx_len)
         enc = Flux2TextContextEncoder(ctx_len=ctx_len, model_id=getattr(cfg, "flux_text_model", None),
                                       flux2_src=getattr(cfg, "flux2_src", None), device=device)
         geneval_ctx = enc.encode(geneval_prompts)
+        enc.set_ctx_len(ps_ctx_len)
         pickscore_ctx = enc.encode(pickscore_prompts)
         del enc
         if torch.cuda.is_available():
@@ -80,6 +84,14 @@ def main():
             geneval_repo=getattr(cfg, "geneval_repo", None),
             out_dir=getattr(cfg, "output_dir", "work_dirs/flux_eval"), device=device)
         print("FLUX eval:", res)
+        peak_gib = torch.cuda.max_memory_reserved() / 2**30 if torch.cuda.is_available() else 0.0
+        print(f"peak GPU memory reserved by torch: {peak_gib:.1f} GiB")
+        from rdm.utils.io import write_json
+        write_json({**res, "load_from": getattr(cfg, "load_from", ""), "flux_ctx_len": ctx_len,
+                    "pickscore_ctx_len": ps_ctx_len,
+                    "num_sampling_steps": getattr(cfg, "num_sampling_steps", 1),
+                    "peak_gpu_gib": round(peak_gib, 2)},
+                   os.path.join(getattr(cfg, "output_dir", "work_dirs/flux_eval"), "flux_eval.json"))
     elif args.artifact == "eval-imagenet":
         from rdm.eval.imagenet_eval import evaluate_imagenet, load_eval_banks
         from rdm.eval.report import format_table

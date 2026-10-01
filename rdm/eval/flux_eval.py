@@ -30,13 +30,17 @@ def render_for_prompts(generator, ctx_table, indices, *, batch: int = 16, latent
     The full noise tensor is drawn once (seed ``seed``) then forwarded in chunks of ``batch``,
     so the result is identical to a single-pass render (samples are independent) but a 4B
     model at 512px does not OOM on the few-hundred-prompt Pick-a-Pic set.
+
+    Only the chunk being rendered is on the GPU: at ctx_len 232 the whole 499-prompt context is
+    3.6 GB and the finished images another 1.6 GB, which is what a 24 GB card is short of. The
+    images are returned on the CPU (PickScore converts them to PIL there anyway).
     """
     idx = list(indices)
-    ctx = ctx_table[idx].to(device)
+    ctx = ctx_table[idx]
     g = torch.Generator(device=device).manual_seed(seed)
     noise = torch.randn(len(idx), latent_channels, latent_size, latent_size,
                         generator=g, device=device)
-    outs = [generator.sample(noise[lo:lo + batch], ctx[lo:lo + batch])
+    outs = [generator.sample(noise[lo:lo + batch], ctx[lo:lo + batch].to(device)).cpu()
             for lo in range(0, len(idx), batch)]
     return torch.cat(outs, 0)
 
@@ -64,8 +68,11 @@ def evaluate_flux(generator, *, pickscore_prompts=None, pickscore_ctx=None,
         results["pickscore"] = mean_pickscore(PickScorer(device=device), imgs, pickscore_prompts)
 
     if geneval_metadata is not None and geneval_ctx is not None:
+        # The generator's own step count: 1 for a student, 4 for the klein teacher. A hard-coded 1
+        # here rendered the teacher's GenEval images one-step while its PickScore ran four-step.
         gdir = render_geneval(generator, geneval_ctx, geneval_metadata, os.path.join(out_dir, "geneval"),
-                              num_steps=1, n_per_prompt=n_geneval_per_prompt,
+                              num_steps=int(generator.sampling_args.get("num_steps", 1)),
+                              n_per_prompt=n_geneval_per_prompt,
                               latent_channels=latent_channels, latent_size=latent_size, device=device)
         if geneval_repo:
             results["geneval"] = run_official_scorer(gdir, geneval_repo,

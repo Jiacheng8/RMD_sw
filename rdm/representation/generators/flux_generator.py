@@ -276,10 +276,20 @@ class FluxGenerator(Generator):
         self.tokenizer = tokenizer
         self.enable_amp = bool(getattr(args, "enable_amp", True))
         self.amp_dtype = getattr(args, "amp_dtype", torch.bfloat16)
+        # autocast keeps a bf16 copy of every fp32 weight for the whole forward (7.8 GB for
+        # klein-4B), which is what puts fp32-weight eval over 24 GB. Turning the cache off only
+        # re-casts per use: identical outputs, eval fits a 4090. Training keeps the default.
+        self.autocast_cache = bool(getattr(args, "autocast_cache", True))
+        # The fp32 VAE decode of a 16-image PickScore batch peaks ~8 GB on top of the resident
+        # fp32 student; decoding it in chunks keeps eval inside 24 GB. Unset = the tokenizer default.
+        self.vae_decode_batch = getattr(args, "vae_decode_batch", None)
 
     def sample(self, noise: torch.Tensor, condition: Any) -> torch.Tensor:
-        with torch.autocast(noise.device.type, enabled=self.enable_amp, dtype=self.amp_dtype):
+        with torch.autocast(noise.device.type, enabled=self.enable_amp, dtype=self.amp_dtype,
+                            cache_enabled=self.autocast_cache):
             # Through __call__, not .sample_images_with_grad: when ``self.model`` is an FSDP
             # wrapper, only its forward gathers the sharded parameters.
             latent = self.model(noise, condition, self.sampling_args)
+        if self.vae_decode_batch:
+            return self.tokenizer.detokenize(latent, decode_bsz=int(self.vae_decode_batch))
         return self.tokenizer.detokenize(latent)

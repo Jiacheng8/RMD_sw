@@ -1,0 +1,69 @@
+{
+ "Qwen/Qwen3-4B": {
+  "commit": "1cfa9a7208912126459214e8b04321603b3df60c",
+  "files": {
+   "config.json": "e49eccdc32f36da9c09cfa0e737084f9e0105e5e",
+   "generation_config.json": "20a8a9156fc8c3f25295ca067f61fdf120d517c5",
+   "merges.txt": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7",
+   "model-00001-of-00003.safetensors": "a6f5dec111c34cd267ff4fd7889ef961237b30418d123d5b60b2c1fd3cbd3cc7",
+   "model-00002-of-00003.safetensors": "ecdf348827111862a9e3830801e7ee1724029573294e851f4aefa70b69116fdd",
+   "model-00003-of-00003.safetensors": "9e03420e9ba417fa0d35ccd26596147c96e2303391318f9a9304a8238dac0614",
+   "model.safetensors.index.json": "95c0a0059df040d75dc6c396b174382cf61d2f91",
+   "tokenizer.json": "6aec39639a0a2d1ca966356b8c2b8426a484f80ff80731f44fa8482040713bdf",
+   "tokenizer_config.json": "417d038a63fa3de29cfde265caedae14d1a58d92",
+   "vocab.json": "4783fe10ac3adce15ac8f358ef5462739852c569"
+  }
+ },
+ "black-forest-labs/FLUX.2-dev": {
+  "commit": "26afe3a78bb242c0a8bb181dcc8937bb16e5c66c",
+  "files": {
+   "ae.safetensors": "532d7ae46c96af511243b9b34afbcf2caf1fc1aa3a3596cdb3eb74e2effd4de7"
+  }
+ },
+ "black-forest-labs/FLUX.2-klein-4B": {
+  "commit": "e7b7dc27f91deacad38e78976d1f2b499d76a294",
+  "files": {
+   "flux-2-klein-4b.safetensors": "b61fd0b644843e77c297d21ea01b1fd9eb4d68d5a634f242ebc4475a6204d6a6"
+  }
+ },
+ "laion/CLIP-ViT-H-14-laion2B-s32B-b79K": {
+  "commit": "1c2b8495b28150b8a4922ee1c8edee224c284c0c",
+  "files": {
+   "config.json": "38a5d523326dafc4a3409504bc8f9aa73b5bc555",
+   "merges.txt": "80954e3a66452c700b68842dcebc85e08dd3306a",
+   "preprocessor_config.json": "5a12a1eb250987a4eee0e3e7d7338c4b22724be1",
+   "special_tokens_map.json": "9bfb42aa97dcd61e89f279ccaee988bccb4fabae",
+   "tokenizer.json": "564c0ebd5ce29c4ee4864004aee693deadd3128c",
+   "tokenizer_config.json": "e3e138b103e00cb9cfb2ab6ef11d96b47ddd9e04",
+   "vocab.json": "182766ce89b439768edadda342519f33802f5364"
+  }
+ },
+ "timm/aimv2_huge_patch14_224.apple_pt": {
+  "commit": "bcf57dd619b3a9d6f823242961150fdfc432a669",
+  "files": {
+   "config.json": "5c3f08f333ab886a0dff496f0aa915c50bc9b004",
+   "model.safetensors": "4e377b14feeed476beada7c4813f971b629c63f4f289348fd8f3e660743d13ff"
+  }
+ },
+ "timm/vit_large_patch16_dinov3.lvd1689m": {
+  "commit": "30c1109559f65dea34316b0d4842d35c5771fe11",
+  "files": {
+   "config.json": "8ed25750a7bf2b6e25acdced526638b9a715fd3a",
+   "model.safetensors": "a0f44f03749f9b3a0d4c1a4a0cf03d955e1c540b11673738b4c8d1808b08d510"
+  }
+ },
+ "timm/vit_so400m_patch16_siglip_256.v2_webli": {
+  "commit": "a8dedb158968170d6fb45a000e0d5755d8021386",
+  "files": {
+   "config.json": "0821c874d0eaca12da00c2c6375cbd1f4ae6d674",
+   "model.safetensors": "c8d562bcf530748a2e33266637f15a7b348db0919d90643560da51dd01df88cd"
+  }
+ },
+ "yuvalkirstain/PickScore_v1": {
+  "commit": "a4e4367c6dfa7288a00c550414478f865b875800",
+  "files": {
+   "config.json": "99e3770ba4e4f1db668d5a4370bbe41bb40adec3",
+   "model.safetensors": "a7f8e5b9857183ff7d7c05b42109f3c8b42cbdf73e75d110046b1baf805294b3"
+  }
+ }
+}

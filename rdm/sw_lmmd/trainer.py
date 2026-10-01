@@ -37,6 +37,8 @@ reparametrization of the same objective.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import torch
 
@@ -48,6 +50,8 @@ from .cache import GeneratedWindowCache
 from .config import CacheConfig
 from .local_mmd import ExactLocalMMD
 from .sharding import all_gather_detached, all_reduce_mean_, partition_rows, reduce_scalar, row_noise
+
+logger = logging.getLogger(__name__)
 
 
 class SWLMMDTrainer:
@@ -273,3 +277,33 @@ class SWLMMDTrainer:
         if with_cache:
             state["cache"] = self.cache.state_dict()
         return state
+
+    def load_state_dict(self, state: dict) -> dict:
+        """Resume from :meth:`state_dict`: step counter and schedule position, plus whatever else
+        the checkpoint carries -- optimizer moments, generated cache, model weights.
+
+        With the cache, the next :meth:`step` continues exactly where the saved run stopped;
+        without it the caller must :meth:`bootstrap`, which re-encodes the next window's
+        retained rows under the restored parameters. The model weights are loaded here only
+        without FSDP (``clip_module is None``); under FSDP the generator must be built from the
+        same file (``load_from``), before it is wrapped. Returns what was restored.
+        """
+        if int(state.get("world_size", get_world_size())) != get_world_size():
+            logger.warning("[sw_lmmd] resuming a %s-rank checkpoint on %d ranks: the window and the "
+                           "gradient are world-size independent, the throughput is not",
+                           state.get("world_size"), get_world_size())
+        restored = {"step": int(state["step"]), "model": False, "optimizer": False, "cache": False}
+        if self.clip_module is None and state.get("model") is not None:
+            self.generator.model.load_state_dict(state["model"])
+            restored["model"] = True
+        self.schedule.load_state_dict(state["schedule"])
+        self.step_idx = int(state["step"])
+        self._pending_window = None
+        if state.get("optimizer") is not None:
+            self.optimizer.load_state_dict(state["optimizer"])
+            restored["optimizer"] = True
+        self.cache.clear()
+        if state.get("cache"):
+            self.cache.load_state_dict(state["cache"], device=self.device)
+            restored["cache"] = True
+        return restored

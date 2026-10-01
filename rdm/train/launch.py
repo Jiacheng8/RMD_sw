@@ -53,7 +53,7 @@ def build_adamw(params, cfg) -> torch.optim.Optimizer:
                              getattr(cfg, "beta2", 0.95)), weight_decay=getattr(cfg, "weight_decay", 0.0))
 
 
-def load_generator_weights(model, load_from: str, mode: str) -> None:
+def load_generator_weights(model, load_from: str, mode: str, strict: bool = False) -> None:
     """Load a generator checkpoint into ``model`` for BOTH modes.
 
     ``load_from`` is either the warm-start base (training) or the post-trained student
@@ -62,20 +62,31 @@ def load_generator_weights(model, load_from: str, mode: str) -> None:
     :func:`convert_pmf_checkpoint`; the FLUX path loads the ``Flux2AdapterModel`` state_dict
     directly (same module that was saved). Without this, FLUX eval would silently run the
     untrained klein-4B base instead of the student.
+
+    ``strict`` (config ``strict_load``) turns both warnings below into errors, for callers that
+    would rather stop than report the base model's numbers under the student's name.
     """
     if not load_from:
         return
+    if strict and not os.path.exists(load_from):
+        raise FileNotFoundError(f"[load_from] {load_from} not found")
     if not os.path.exists(load_from):
         # Documented contract: a missing checkpoint runs the untrained base, it does not crash
         # (so eval-flux won't die only after encoding all the prompts on the GPU).
         logger.warning("[load_from] %s not found -- skipping; running the UNTRAINED base. "
                        "Point load_from at a trained checkpoint to evaluate the student.", load_from)
         return
-    sd = torch.load(load_from, map_location="cpu", weights_only=False)
+    # mmap: only the weights are read, not a resume file's optimizer state -- and every rank
+    # loading its own full copy into RAM is avoided.
+    sd = torch.load(load_from, map_location="cpu", weights_only=False, mmap=True)
     sd = sd.get("model", sd) if isinstance(sd, dict) else sd
     if mode != "flux":
         sd = convert_pmf_checkpoint(sd)
     missing, unexpected = model.load_state_dict(sd, strict=False)
+    if strict and (missing or unexpected):
+        raise RuntimeError(f"[load_from] {load_from}: {len(missing)} missing / {len(unexpected)} "
+                           f"unexpected keys (missing e.g. {list(missing)[:3]}; "
+                           f"unexpected e.g. {list(unexpected)[:3]})")
     if missing or unexpected:
         logger.warning("[load_from] %s: %d missing / %d unexpected keys (missing e.g. %s; "
                        "unexpected e.g. %s)", load_from, len(missing), len(unexpected),
@@ -106,7 +117,8 @@ def build_generator_from_config(cfg, device: str = "cuda", param_dtype=None):
             noise_scale=getattr(cfg, "noise_scale", 2.0), rope_2d=getattr(cfg, "rope_2d", True),
             learned_pe=getattr(cfg, "learned_pe", True),
             disable_v_head=getattr(cfg, "disable_v_head", True)).to(device)
-    load_generator_weights(model, getattr(cfg, "load_from", ""), mode)
+    load_generator_weights(model, getattr(cfg, "load_from", ""), mode,
+                           strict=bool(getattr(cfg, "strict_load", False)))
     generator = build_generator(mode, model, sampling_args, args=cfg, tokenizer=tokenizer)
     return generator, model
 

@@ -5,6 +5,8 @@
 #   GPUS=4 FSDP=1 bash scripts/train_sw_lmmd.sh configs/sw_lmmd_debug_4x4090.yaml
 #   GPUS=2 STEPS=5 bash scripts/train_sw_lmmd.sh <config>        # short smoke run
 #   REFERENCE_ROOT=/mnt/store bash scripts/train_sw_lmmd.sh <config>   # store moved/copied
+#   OUTPUT_DIR=/mnt/work_dirs bash scripts/train_sw_lmmd.sh <config>   # checkpoints/logs elsewhere
+#   RESUME_FROM=<run dir>/resume.pth bash scripts/train_sw_lmmd.sh <config>   # continue a stopped run
 #
 # Multi-node: set NNODES / NODE_RANK / MASTER_ADDR / MASTER_PORT, as in scripts/train.sh.
 #
@@ -17,6 +19,7 @@
 # every MM-DiT block costs an extra all-gather. It also forces grad_reduce=none, because
 # FSDP's reduce-scatter already averages the gradient.
 set -euo pipefail
+export PYTHONNOUSERSITE=1   # packages in ~/.local/lib/pythonX.Y must never shadow the conda envs'
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${1:?usage: GPUS=<n> bash scripts/train_sw_lmmd.sh <config.yaml>}"
@@ -47,6 +50,13 @@ OVERRIDES=()
 # The configs carry an absolute reference_root, so a new machine would otherwise need the YAML
 # edited before it could run at all.
 [[ -n "${REFERENCE_ROOT:-}" ]] && OVERRIDES+=("--set" "reference_root=$REFERENCE_ROOT")
+[[ -n "${OUTPUT_DIR:-}" ]] && OVERRIDES+=("--set" "output_dir=$OUTPUT_DIR")
+# Resume (configs with save_resume: true keep <run dir>/resume.pth). The weights come in through
+# load_from, strictly: a wrong path must stop the run, not silently restart from the base model.
+if [[ -n "${RESUME_FROM:-}" ]]; then
+  [[ -f "$RESUME_FROM" ]] || { echo "RESUME_FROM=$RESUME_FROM does not exist" >&2; exit 1; }
+  OVERRIDES+=("--set" "resume_from=$RESUME_FROM" "--set" "load_from=$RESUME_FROM" "--set" "strict_load=true")
+fi
 
 # The overrides are passed here too, so the numbers printed are the numbers the run uses.
 conda run -n "$CONDA_ENV" --no-capture-output python - "$CONFIG" "$GPUS" "${OVERRIDES[@]}" <<'PY'
@@ -83,6 +93,16 @@ print(f"    est. per-card ~{est:.0f} GB  (activation term is an estimate; halve 
 print(f"    encoders      {len(cfg.encoders)}: {','.join(cfg.encoders)}")
 print(f"    reference     {root}")
 print(f"    steps         {cfg.steps}  ->  {getattr(cfg,'output_dir','./work_dirs')}/{cfg.exp_name}")
+if getattr(cfg, "save_resume", False):
+    print(f"    resume state  every {getattr(cfg, 'resume_every', 0) or cfg.save_freq} steps -> <run dir>/resume.pth")
+if getattr(cfg, "resume_from", None):
+    import torch
+    st = torch.load(cfg.resume_from, map_location="cpu", weights_only=False, mmap=True)
+    if int(st["step"]) >= int(cfg.steps):
+        raise SystemExit(f"    {cfg.resume_from} is at step {st['step']}: the {cfg.steps}-step run is already complete")
+    print(f"    RESUMING      {cfg.resume_from} at step {st['step']} (optimizer "
+          f"{'yes' if st.get('optimizer') is not None else 'NO'}, cache {'yes' if st.get('cache') else 'NO'}), "
+          f"{int(cfg.steps) - int(st['step'])} steps to go")
 PY
 
 say "launching $GPUS rank(s)"

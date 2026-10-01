@@ -229,8 +229,16 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
     without a filesystem or a clock. ``trainer`` injects a prebuilt one (the FSDP test drives
     this loop with a tiny model); by default it is built from ``cfg``.
 
-    Checkpoints are weights-only unless ``save_optimizer: true`` (nothing resumes from the
-    optimizer state yet, and for fp32 AdamW it is 31 GB per save).
+    ``step_NNNNNNN.pth`` checkpoints are weights-only unless ``save_optimizer: true`` (for fp32
+    AdamW that is 31 GB per save); they are what gets evaluated.
+
+    Resume: with ``save_resume: true`` the loop also keeps ONE ``resume.pth`` -- weights,
+    optimizer moments (not under FSDP, whose optimizer is sharded), the schedule position and
+    the generated cache -- rewritten every ``resume_every`` steps (default ``save_freq``) and at
+    the end. ``resume_from: <that file>`` continues the run where it stopped: same step counter,
+    same windows, same optimizer state, so the remaining steps are those of an uninterrupted run.
+    Every file is written beside its target and renamed into place, so a crash mid-write never
+    leaves a truncated checkpoint where a good one was.
     """
     import json
     import os
@@ -246,11 +254,19 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
         raise ValueError("save_optimizer under FSDP would store only rank 0's optimizer shard, "
                          "which cannot resume anything; leave it false")
     save_freq = int(getattr(cfg, "save_freq", 50))
+    save_resume = bool(getattr(cfg, "save_resume", False))
+    resume_every = int(getattr(cfg, "resume_every", 0) or save_freq)
+    resume_from = getattr(cfg, "resume_from", None) or None
     cache_cfg = cache_from_config(cfg)
     out_dir = os.path.join(getattr(cfg, "output_dir", "./work_dirs"),
                            getattr(cfg, "exp_name", "sw-lmmd"))
     os.makedirs(out_dir, exist_ok=True)
     jsonl = open(os.path.join(out_dir, "train_log.jsonl"), "a") if is_main_process() else None
+
+    def write(state, path):
+        tmp = path + ".partial"
+        torch.save(state, tmp)
+        os.replace(tmp, path)
 
     def checkpoint():
         # EVERY rank builds the state: under FSDP the full state dict is a collective gather,
@@ -258,18 +274,36 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
         state = trainer.state_dict(with_cache=save_cache, with_optimizer=save_optimizer)
         if is_main_process():
             path = os.path.join(out_dir, f"step_{trainer.step_idx:07d}.pth")
-            torch.save(state, path)
+            write(state, path)
             logger.info("[sw_lmmd] checkpoint -> %s", path)
 
+    def save_resume_state():
+        state = trainer.state_dict(with_cache=True, with_optimizer=trainer.clip_module is None)
+        if is_main_process():
+            t = time.time()
+            write(state, os.path.join(out_dir, "resume.pth"))
+            logger.info("[sw_lmmd] resume state (step %d) -> %s in %.0f s", trainer.step_idx,
+                        os.path.join(out_dir, "resume.pth"), time.time() - t)
+
     t0 = time.time()
-    logger.info("[sw_lmmd] bootstrap ...")
-    boot = trainer.bootstrap()
-    logger.info("[sw_lmmd] bootstrap done: %s rows (%s/rank) in %.1f s",
-                boot["bootstrap_rows"], boot["bootstrap_rows_per_rank"], time.time() - t0)
+    if resume_from:
+        state = torch.load(resume_from, map_location="cpu", weights_only=False, mmap=True)
+        restored = trainer.load_state_dict(state)
+        del state
+        logger.info("[sw_lmmd] resumed %s at step %d (weights %s, optimizer %s, cache %s)",
+                    resume_from, restored["step"],
+                    "loaded" if restored["model"] else "from load_from",
+                    "restored" if restored["optimizer"] else "FRESH",
+                    "restored" if restored["cache"] else "re-bootstrapped")
+    if not trainer.cache.initialized:
+        logger.info("[sw_lmmd] bootstrap ...")
+        boot = trainer.bootstrap()
+        logger.info("[sw_lmmd] bootstrap done: %s rows (%s/rank) in %.1f s",
+                    boot["bootstrap_rows"], boot["bootstrap_rows_per_rank"], time.time() - t0)
 
     probe_every = int(getattr(cfg, "probe_every", 0) or cache_cfg.refresh_every_windows or 0)
     drift = None
-    for _ in range(int(cfg.steps)):
+    for _ in range(max(0, int(cfg.steps) - trainer.step_idx)):
         step_t = time.time()
         logs = trainer.step()
         logs["seconds"] = time.time() - step_t
@@ -293,9 +327,13 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
             jsonl.flush()
         if trainer.step_idx % save_freq == 0:
             checkpoint()
+        if save_resume and trainer.step_idx % resume_every == 0:
+            save_resume_state()
 
     if trainer.step_idx % save_freq:              # the final step, unless it was just saved
         checkpoint()
+    if save_resume and trainer.step_idx % resume_every:
+        save_resume_state()
     if is_main_process():
         jsonl.close()
         logger.info("[sw_lmmd] done: %d steps in %.2f h", trainer.step_idx,

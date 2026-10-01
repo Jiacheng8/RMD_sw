@@ -58,9 +58,12 @@ class Flux2TextContextEncoder(nn.Module):
             from flux2.text_encoder import load_qwen3_embedder
             logger.info("[flux2-text] loading Qwen3-%s-FP8 embedder (ctx_len=%d)", variant, ctx_len)
             self.embedder = load_qwen3_embedder(variant=variant, device=device)
-        self.embedder.max_length = int(ctx_len)        # fixed pad/truncate length L
-        self.ctx_len = int(ctx_len)
+        self.set_ctx_len(ctx_len)                      # fixed pad/truncate length L
         self.device = device
+
+    def set_ctx_len(self, ctx_len: int) -> None:
+        """Change L between encodes; the embedder reads it per call, so no reload is needed."""
+        self.embedder.max_length = self.ctx_len = int(ctx_len)
 
     @torch.no_grad()
     def encode(self, prompts: list[str], batch: int = 16) -> torch.Tensor:

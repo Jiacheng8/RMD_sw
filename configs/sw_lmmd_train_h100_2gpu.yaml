@@ -50,5 +50,12 @@ steps: 2000
 save_freq: 200                # weights-only fp32 checkpoints, 15.5 GB each -> 10 over the run
 monitor_every: 1
 probe_every: 10               # staleness probe cadence (0 = follow cache.refresh_every_windows)
-save_cache: false             # a resume re-bootstraps the window
-save_optimizer: false         # nothing resumes from it yet, and it would add 7.8 GB per save
+save_cache: false             # step checkpoints stay weights-only: they are what gets evaluated
+save_optimizer: false
+# Resume: <run dir>/resume.pth (weights + 8-bit AdamW moments + schedule + cache, ~23.3 GB, ONE
+# file, rewritten in place every 100 steps and at the end). A stopped run continues from it with
+#   bash scripts/new_machine.sh --root <root> --resume       (or RESUME_FROM=... train_sw_lmmd.sh)
+# and the remaining steps are those of an uninterrupted run. Losing a run costs <= 100 steps.
+# 100, not 50: an unsharded H100 step is ~10 s (estimate), so 50 would write 23 GB every ~8 min.
+save_resume: true
+resume_every: 100

@@ -114,6 +114,73 @@ def test_load_generator_weights_skips_missing_file():
     assert torch.allclose(dst.weight, w0)
 
 
+def test_flux_text_context_set_ctx_len_between_encodes():
+    """eval-flux encodes GenEval at the training L, then Pick-a-Pic at pickscore_ctx_len."""
+    _install_fake_flux2()
+    try:
+        enc = Flux2TextContextEncoder(ctx_len=48, model_id="Qwen/Qwen3-4B", device="cpu")
+        assert enc.encode(["a cat"]).shape == (1, 48, FLUX2_QWEN3_DIM)
+        enc.set_ctx_len(232)
+        assert enc.embedder.max_length == 232 and enc.ctx_len == 232
+        assert enc.encode(["a cat", "a dog"]).shape == (2, 232, FLUX2_QWEN3_DIM)
+        assert enc.encode([]).shape == (0, 232, FLUX2_QWEN3_DIM)
+    finally:
+        _uninstall_fake_flux2()
+
+
+def test_load_generator_weights_strict_raises():
+    """strict_load: a missing file or a key mismatch stops the run instead of evaluating the base."""
+    import pytest
+
+    from rdm.train.launch import load_generator_weights
+    with pytest.raises(FileNotFoundError):
+        load_generator_weights(torch.nn.Linear(4, 4), "/no/such/checkpoint_xyz.pth", "flux", strict=True)
+    p = os.path.join(tempfile.mkdtemp(), "other.pth")
+    torch.save({"model": torch.nn.Sequential(torch.nn.Linear(4, 4)).state_dict()}, p)   # keys "0.weight"
+    dst = torch.nn.Linear(4, 4)                                                          # keys "weight"
+    w0 = dst.weight.clone()
+    load_generator_weights(dst, p, "flux")                  # default: warns, keeps the base
+    assert torch.allclose(dst.weight, w0)
+    with pytest.raises(RuntimeError, match="2 missing / 2 unexpected"):
+        load_generator_weights(dst, p, "flux", strict=True)
+    load_generator_weights(dst, "", "flux", strict=True)    # unset load_from is still the base
+
+
+class _StepRecordingGenerator:
+    """Records the step count each render ran with; images are a fixed function of the noise."""
+
+    def __init__(self, num_steps):
+        self.sampling_args = {"num_steps": num_steps}
+        self.seen = []
+
+    def sample(self, noise, ctx):
+        self.seen.append(self.sampling_args["num_steps"])
+        return torch.sigmoid(noise[:, :3])
+
+
+def test_evaluate_flux_geneval_renders_with_generator_steps():
+    """The 4-step teacher's GenEval images are rendered 4-step (render_geneval used to get num_steps=1)."""
+    from rdm.eval.flux_eval import evaluate_flux
+    gen = _StepRecordingGenerator(num_steps=4)
+    meta = [{"prompt": "a cat", "tag": "single_object"}, {"prompt": "a dog", "tag": "single_object"}]
+    out = tempfile.mkdtemp()
+    res = evaluate_flux(gen, geneval_metadata=meta, geneval_ctx=torch.zeros(2, 4, 8), out_dir=out,
+                        n_geneval_per_prompt=2, latent_channels=4, latent_size=8, device="cpu")
+    assert gen.seen == [4, 4] and gen.sampling_args["num_steps"] == 4
+    assert sorted(os.listdir(os.path.join(out, "geneval", "00001", "samples"))) == ["0000.png", "0001.png"]
+    assert "_note" in res["geneval"]                         # no geneval_repo: rendered, not scored
+
+
+def test_render_for_prompts_chunking_is_invisible():
+    """Per-chunk rendering returns the single-pass result, on the CPU."""
+    from rdm.eval.flux_eval import render_for_prompts
+    gen = _StepRecordingGenerator(num_steps=1)
+    ctx = torch.randn(5, 4, 8)
+    a = render_for_prompts(gen, ctx, range(5), batch=2, latent_channels=4, latent_size=8, device="cpu")
+    b = render_for_prompts(gen, ctx, range(5), batch=16, latent_channels=4, latent_size=8, device="cpu")
+    assert a.shape == (5, 3, 8, 8) and a.device.type == "cpu" and torch.equal(a, b)
+
+
 def test_build_flux2_ctx_loads_jsonl_prompts():
     """The ctx_pool builder reads prompts from a .jsonl (no flux2/GPU needed for this path)."""
     import importlib.util
