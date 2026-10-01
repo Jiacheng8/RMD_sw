@@ -33,10 +33,11 @@
 #   - the FLUX.2 VAE (black-forest-labs/FLUX.2-dev) is a GATED repo: accept its licence on
 #     huggingface.co (once per HF account), then give this machine a token before stage 2 --
 #     `conda run -n rdm hf auth login --token hf_...` after stage 1, or `export HF_TOKEN=hf_...`.
-#     Use a classic "Read" token; a fine-grained one needs "read access to public gated repos";
-#   - rclone (https://rclone.org/install/) with a Google Drive remote named "gdrive", authorised
-#     (`rclone config`) with the Google account that owns SW-RDM/ -- stage 2 downloads the
-#     reference store through it. Another remote name: export SW_STORE_RCLONE=<name>:SW-RDM.
+#     Use a classic "Read" token; a fine-grained one needs "read access to public gated repos"
+#     AND "read access to contents of all repos under your personal namespace": the same token
+#     fetches the reference store from the private dataset jiachengcui888/sw-rdm-reference-store;
+#   - optional: rclone with a Google Drive remote "gdrive" (account that owns SW-RDM/), the slow
+#     fallback for the store if the HF dataset is not readable.
 #
 # Options: --root DIR (required)  --gpus N (2)  --config YAML  --gate  --steps N  --micro-batch N
 #          --output-dir DIR  --env NAME (rdm)  --hf-cache DIR  --full-download
@@ -52,6 +53,11 @@ if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))
 fi
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# This machine's Hugging Face token: write it into <repo>/.hf_token (git-ignored, never committed)
+# instead of exporting it in every shell. An exported HF_TOKEN still wins; every stage inherits it.
+if [[ -z "${HF_TOKEN:-}" && -s "$REPO/.hf_token" ]]; then
+  HF_TOKEN="$(tr -d '[:space:]' < "$REPO/.hf_token")"; export HF_TOKEN
+fi
 ROOT=""
 GPUS=2
 CONFIG="configs/sw_lmmd_train_h100_2gpu.yaml"
@@ -177,27 +183,69 @@ if [[ $DO_TRAIN -eq 1 && -n "${SHM_MB:-}" && "$SHM_MB" -lt 1024 ]]; then
   warn "/dev/shm is only ${SHM_MB} MB (a container default?) -- NCCL can fail on it once training"
   warn "  starts; restart the container with --shm-size=16g (or --ipc=host) if it does"
 fi
-if [[ $DO_DOWNLOAD -eq 1 && ! -f "$STORE/metadata.json" && -z "${SW_STORE_TAR:-}" ]]; then
-  # Stage 2 fetches the reference store with rclone; check it can, before hours of other work.
-  RCLONE_SRC="${SW_STORE_RCLONE:-gdrive:SW-RDM}"
-  RC_PROBLEM=""
-  if ! command -v rclone >/dev/null 2>&1; then
-    RC_PROBLEM="rclone is not installed (https://rclone.org/install/)"
-  elif ! rclone listremotes 2>/dev/null | grep -qx "${RCLONE_SRC%%:*}:"; then
-    RC_PROBLEM="no rclone remote '${RCLONE_SRC%%:*}:'"
-  elif ! rclone lsf "$RCLONE_SRC/" 2>/dev/null | grep -qx "reference_store_noctx.tar"; then
-    RC_PROBLEM="$RCLONE_SRC/reference_store_noctx.tar not found (remote authorised with another Google account?)"
-  fi
-  if [[ -z "$RC_PROBLEM" ]]; then
-    info "store       rclone $RCLONE_SRC (reachable)"
-  elif [[ $DRY -eq 1 ]]; then
-    warn "$RC_PROBLEM -- stage 2 downloads the reference store with rclone"
+# Hugging Face: which account the token stage 2 will use belongs to, and whether it can download the
+# gated FLUX.2-dev VAE and read the private reference-store dataset -- found out now, not mid-download.
+# (The auth header comes from a file descriptor, so the token never shows in ps or in the log.)
+SW_STORE_HF="${SW_STORE_HF-jiachengcui888/sw-rdm-reference-store}"
+TOKEN="${HF_TOKEN:-}"
+TOKFILE="${HF_TOKEN_PATH:-${HF_HOME:-$HOME/.cache/huggingface}/token}"
+[[ -z "$TOKEN" && -f "$TOKFILE" ]] && TOKEN="$(cat "$TOKFILE")"
+hf_http() {   # hf_http <url> [head]: the HTTP status of a request made with the token
+  curl -s -o /dev/null -w '%{http_code}' ${2:+-I} -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") "$1" \
+    2>/dev/null || true
+}
+if [[ $DO_DOWNLOAD -eq 1 ]]; then
+  if [[ -z "$TOKEN" ]]; then
+    warn "no Hugging Face token yet: export HF_TOKEN=hf_... before stage 2 (FLUX.2-dev and the store need it)"
   else
-    die "$RC_PROBLEM.
-  Stage 2 downloads the reference store from Google Drive with rclone:
-    rclone config     new remote -> name: ${RCLONE_SRC%%:*}, storage: drive, authorised with the
-                      Google account that owns ${RCLONE_SRC#*:}/
-  (a remote with another name: export SW_STORE_RCLONE=<name>:${RCLONE_SRC#*:}), then re-run"
+    WHO=$(curl -s -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") https://huggingface.co/api/whoami-v2 \
+            2>/dev/null | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    info "HF token    account ${WHO:-<unknown: token invalid?>}"
+    if ! ls "${HF_CACHE:-$ROOT/hf/hub}"/models--black-forest-labs--FLUX.2-dev/snapshots/*/ae.safetensors >/dev/null 2>&1; then
+      CODE=$(hf_http https://huggingface.co/black-forest-labs/FLUX.2-dev/resolve/main/ae.safetensors head)
+      case "$CODE" in
+        2??|3??) info "FLUX.2-dev  gated VAE downloadable with this token" ;;
+        *) MSG="this token (account ${WHO:-?}) cannot download the gated FLUX.2-dev VAE (HTTP ${CODE:-?}).
+  Log in to huggingface.co as ${WHO:-that account}, accept the licence at
+  https://huggingface.co/black-forest-labs/FLUX.2-dev, and if the token is fine-grained, give it
+  \"read access to contents of all public gated repos you can access\" (or use a classic Read token)."
+           if [[ $DRY -eq 1 ]]; then warn "$MSG"; else die "$MSG"; fi ;;
+      esac
+    fi
+  fi
+fi
+if [[ $DO_DOWNLOAD -eq 1 && ! -f "$STORE/metadata.json" && -z "${SW_STORE_TAR:-}" ]]; then
+  # Stage 2 fetches the reference store from the private HF dataset, else from Google Drive with
+  # rclone (a fallback: ~2 h against ~2 min). Check now that one of them works.
+  RCLONE_SRC="${SW_STORE_RCLONE:-gdrive:SW-RDM}"
+  HF_STATE="off (SW_STORE_HF empty)"
+  if [[ -n "$SW_STORE_HF" ]]; then
+    if [[ -z "$TOKEN" ]]; then
+      HF_STATE="no token yet"
+    else
+      CODE=$(hf_http "https://huggingface.co/api/datasets/$SW_STORE_HF")
+      if [[ "$CODE" == 200 ]]; then HF_STATE="ok"
+      else HF_STATE="not readable by this token's account ${WHO:-?} (HTTP ${CODE:-?})"; fi
+    fi
+  fi
+  RC_STATE="ok"
+  if ! command -v rclone >/dev/null 2>&1; then
+    RC_STATE="rclone not installed"
+  elif ! rclone listremotes 2>/dev/null | grep -qx "${RCLONE_SRC%%:*}:"; then
+    RC_STATE="no rclone remote '${RCLONE_SRC%%:*}:'"
+  elif ! rclone lsf "$RCLONE_SRC/" 2>/dev/null | grep -qx "reference_store_noctx.tar"; then
+    RC_STATE="$RCLONE_SRC/reference_store_noctx.tar not found"
+  fi
+  if [[ "$HF_STATE" == ok ]]; then
+    info "store       HF dataset $SW_STORE_HF (readable); rclone fallback: $RC_STATE"
+  elif [[ "$RC_STATE" == ok ]]; then
+    warn "store: HF dataset $SW_STORE_HF: $HF_STATE -- stage 2 falls back to rclone $RCLONE_SRC (Drive: ~2 h)"
+  elif [[ $DRY -eq 1 || "$HF_STATE" == "no token yet" ]]; then
+    warn "store: HF dataset $SW_STORE_HF: $HF_STATE; rclone: $RC_STATE -- stage 2 needs one of them"
+  else
+    die "cannot fetch the reference store. HF dataset $SW_STORE_HF: $HF_STATE; rclone: $RC_STATE.
+  Give this machine a token that can read $SW_STORE_HF (export HF_TOKEN=hf_...; a classic \"Read\"
+  token reads your own private repos), or set up the rclone fallback (rclone config, remote gdrive)."
   fi
 fi
 if [[ $DRY -eq 0 ]]; then

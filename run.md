@@ -19,7 +19,7 @@
 
 - 预处理 01 → 02 → 03 已全部完成（9 月 30 日 05:00，`[store] OK`）。
 - 4090 上的 20 步 gate 已跑通：约 20.7 GB/卡，每步约 5.3 分钟；算上缓存刷新，2000 步大约要 9 天。
-- 参考库（不含 61 GB 的 context）和 `coco_pairs.npz` 已上传到 Google Drive 的 `SW-RDM/`。
+- 参考库（不含 61 GB 的 context）和 `coco_pairs.npz` 已上传到 HF 私有 dataset `jiachengcui888/sw-rdm-reference-store`（主要来源，2026-10-01 实测下载、校验和解压一共不到 3 分钟），Google Drive 的 `SW-RDM/` 里也有一份作为备用。
 
 下一步要做的事：
 
@@ -141,9 +141,9 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 GPUS=4 bash scripts/train_sw_lmmd.sh configs/sw_lmm
 |---|---|
 | 租之前 | 在这台 4090 上 push 代码（第 0 步）；HF 账号已在 FLUX.2-dev 页面接受 license，并备好 Read token |
 | 选机器 | 2 × H100 **80 GB**、数据盘至少 350 GB、驱动 ≥ 525；容器的话 `--shm-size=16g` |
-| 开机后 | 装 conda（系统盘小就装到数据盘）→ `git clone` → `export HF_TOKEN=...` → 安装 rclone 并 `rclone config` → `tmux new -s train` |
+| 开机后 | 装 conda（系统盘小就装到数据盘）→ `git clone` → `echo hf_xxx > RDM/.hf_token && chmod 600 RDM/.hf_token`（`jiachengcui888` 的 Read token，见第 2 步）→ `tmux new -s train`。rclone 只是备用，可以不配 |
 | 第一条命令 | `bash scripts/new_machine.sh --root <数据盘>/rdm-sets --dry-run`：检查都通过、没有 ERROR，再去掉 `--dry-run` 正式跑 |
-| 前 1–2 小时 | 第 2 阶段下载，Drive 可能限速，不用管；第 2 阶段结束时 8 个模型都应显示 `same` |
+| 前 30 分钟左右 | 第 2 阶段下载（参考库从 HF 下载约 2 分钟）；第 2 阶段结束时 8 个模型都应显示 `same` |
 | 训练开始后 15 分钟内 | 看到 `step 1 ...`；`nvidia-smi` 显存在 80 GB 以下；记下每步秒数 |
 | 第 100 步 | 日志出现 `resume state (step 100) -> ... in N s`，说明断点文件能写（N 是写盘秒数）；之后任何中断都用 `--resume` 接着跑 |
 | 训练结束 | 两张卡并行评测（第 7 步）→ 拷走结果（第 9 步）→ 确认拷完再退租 |
@@ -151,7 +151,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 GPUS=4 bash scripts/train_sw_lmmd.sh configs/sw_lmm
 **新机器上要事先准备好的**：
 
 - **conda**（Miniconda 即可）。脚本不会自动安装它。如果机器的系统盘很小（租用机器常见），把 Miniconda 装在数据盘上，因为 rdm 环境本身要约 12 GB：`bash Miniconda3-latest-Linux-x86_64.sh -b -p /data/<你>/miniconda3 && source /data/<你>/miniconda3/bin/activate`。不需要接受 Anaconda 的服务条款：两个环境都只用 conda-forge 和 NVIDIA 的频道。
-- 用最新代码 `git clone` 下来的仓库（第 0 步）、HF token（第 2 步）、rclone 的 `gdrive` 远程（第 3 步）。
+- 用最新代码 `git clone` 下来的仓库（第 0 步）、HF token（第 2 步）。rclone 的 `gdrive` 远程只是备用（第 3 步）。
 
 **租机器时确认这几项**（启动时脚本也会逐项检查）：2 × H100 **80 GB**；数据盘**至少 350 GB** 空闲；NVIDIA 驱动 ≥ 525；如果是容器，`/dev/shm` 至少 1 GB（启动容器时加 `--shm-size=16g` 或 `--ipc=host`）。
 
@@ -165,8 +165,8 @@ cd /home/jiacheng/RDM && git add -A && git commit -m "..." && git push
 
 ```bash
 git clone https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
-export HF_TOKEN=hf_xxx            # 或者等第 1 阶段装好环境后执行：conda run -n rdm hf auth login --token hf_xxx
-rclone config                     # 远程命名为 gdrive，用同一个 Google 账号授权
+echo hf_xxx > .hf_token && chmod 600 .hf_token   # 你的 HF Read token；.hf_token 被 git 忽略，不会被提交
+# rclone config                   # 可选：只在 HF 下载不了参考库时用作备用，见第 3 步
 tmux new -s train
 bash scripts/new_machine.sh --root /data/<你>/rdm-sets --dry-run   # 先看计划和检查结果，什么都不改
 bash scripts/new_machine.sh --root /data/<你>/rdm-sets
@@ -174,19 +174,21 @@ bash scripts/new_machine.sh --root /data/<你>/rdm-sets
 
 **2. Hugging Face（每台机器都要做）：**
 
-- FLUX 的 VAE（black-forest-labs/FLUX.2-dev）需要授权。先在 https://huggingface.co/black-forest-labs/FLUX.2-dev 上接受 license；每个 HF 账号只需要做一次。
-- 在 https://huggingface.co/settings/tokens 创建一个 **"Read"** 类型的 token。如果用 fine-grained 类型的 token，要勾选 "Read access to contents of all public gated repos you can access"。
-- 让新机器拿到 token，二选一：
-  - `export HF_TOKEN=hf_xxx`：只对当前 shell 有效。
+- **用你自己的账号 `jiachengcui888` 的 token**：参考库在这个账号的私有 dataset 里，只有它的 token 能读。注意：4090 这台机器上存的 HF token 属于 `xinyuebi9`，不是你的账号，而且它现在下载 FLUX.2-dev 会被拒（403），这边能用只是因为文件早就缓存了。
+- FLUX 的 VAE（black-forest-labs/FLUX.2-dev）需要授权。用 `jiachengcui888` 登录 https://huggingface.co/black-forest-labs/FLUX.2-dev 接受 license；每个 HF 账号只需要做一次。
+- 启动时脚本会打印 token 属于哪个账号，并检查两件事：能不能下载 FLUX.2-dev、能不能读私有 dataset。FLUX.2-dev 下载不了就在开始前停下。
+- 在 https://huggingface.co/settings/tokens 创建一个 **"Read"** 类型的 token（classic Read token 能读你自己的私有 repo）。如果用 fine-grained 类型的 token，要同时勾选 "Read access to contents of all public gated repos you can access" 和 "Read access to contents of all repos under your personal namespace"：同一个 token 还要从私有 dataset `jiachengcui888/sw-rdm-reference-store` 下载参考库。启动时脚本会检查它能不能读这个 dataset。
+- 让新机器拿到 token（推荐第一种）：
+  - **写进仓库根目录的 `.hf_token`**：`echo hf_xxx > ~/RDM/.hf_token && chmod 600 ~/RDM/.hf_token`。`new_machine.sh` 和 `download_all.sh` 会自动读取。这个文件在 `.gitignore` 里，`git add -A` 也不会把它提交上去。仓库是公开的，**千万不要把 token 直接写进任何脚本**。
+  - `export HF_TOKEN=hf_xxx`：只对当前 shell 有效；设置了它就优先用它。
   - `conda run -n rdm hf auth login --token hf_xxx`：保存在这台机器上。
 - 如果忘了登录，脚本会在第 2 阶段开始下载之前停下来，并给出这些步骤。登录后加 `--skip-env` 重跑即可。
 
-**3. rclone（必需）：**
+**3. 参考库从哪里下载：**
 
-- 参考库（`reference_store_noctx.tar` 约 9 GB，`coco_pairs.npz` 12 MB）**只用 rclone 下载**，来源是 `gdrive:SW-RDM/`，下载后校验 md5。
-- 先安装 rclone（https://rclone.org/install/），再运行 `rclone config` 新建一个远程：名字叫 `gdrive`，存储类型选 drive（Google Drive），用**上传这些文件的同一个 Google 账号**授权。如果换成别的账号、文件夹是别人共享过来的，会出现在"与我共享"里，`gdrive:SW-RDM` 就找不到了。
-- 远程名不叫 `gdrive` 的话：`export SW_STORE_RCLONE=<名字>:SW-RDM`。
-- `new_machine.sh` 启动时会检查三件事：rclone 已安装、远程存在、远程里能找到这个 tar 包。任何一项不满足，都会在开始之前就停下来，并说明怎么配置。
+- 参考库（`reference_store_noctx.tar` 9.1 GB，`coco_pairs.npz` 12 MB）**优先从 HF 私有 dataset `jiachengcui888/sw-rdm-reference-store` 下载**：这台机器上用你的 token 实测，下载、校验和解压一共不到 3 分钟；中断后可以续传；下载后校验 md5。
+- HF 读不到时，才退回 rclone 从 Google Drive 下载（`gdrive:SW-RDM/`）。2026-10-01 实测：前一半约 30 MB/s，之后被限速到 0.2–0.5 MB/s，超过 2 小时。要用这条备用路线：安装 rclone（https://rclone.org/install/），`rclone config` 新建名为 `gdrive` 的 Google Drive 远程，用拥有 `SW-RDM/` 的那个 Google 账号授权；远程名不同就 `export SW_STORE_RCLONE=<名字>:SW-RDM`。
+- `new_machine.sh` 启动时会用你的 token 检查 HF dataset 能不能读，同时检查 rclone 备用路线。两条都不通，就在开始之前停下来并说明原因。
 - 如果 tar 包已经用别的方式拷过来了：`export SW_STORE_TAR=/path/reference_store_noctx.tar`。
 
 **4. 五个阶段分别做什么：**
@@ -194,14 +196,14 @@ bash scripts/new_machine.sh --root /data/<你>/rdm-sets
 | 阶段 | 调用的脚本 | 做什么 | 耗时 |
 |---|---|---|---|
 | 1 环境 | `setup_env.sh` | conda 环境（torch 2.8.0+cu126、bitsandbytes） | 约 7 分钟（实测，网速快时） |
-| 2 下载 | `download_all.sh --minimal` | 编码器、FLUX（klein-4B、VAE、Qwen3-4B）（只下训练实际用到的 3 个编码器）、评测用的 PickScore、flux2 源码（固定在 commit `50fe516`），约 26 GB；下载完会核对每个模型文件和参考结果用的是否一致；再用 rclone 下载参考库和 `coco_pairs.npz`，校验 md5 后解压 | 看网速；Drive 可能限速，见下面 |
-| 3 预处理 | `preprocess_all-new-machine.sh` | 用 Qwen3 重新生成 61 GB 的 context（Drive 上的参考库不含它），接入参考库并验证 | 约 10 分钟，1 张卡 |
+| 2 下载 | `download_all.sh --minimal` | 编码器、FLUX（klein-4B、VAE、Qwen3-4B）（只下训练实际用到的 3 个编码器）、评测用的 PickScore、flux2 源码（固定在 commit `50fe516`），约 26 GB；下载完会核对每个模型文件和参考结果用的是否一致；再从 HF 私有 dataset 下载参考库和 `coco_pairs.npz`（备用：rclone），校验 md5 后解压 | 这台机器上约 5–10 分钟（HF 实测 78 MB/s） |
+| 3 预处理 | `preprocess_all-new-machine.sh` | 用 Qwen3 重新生成 61 GB 的 context（上传的参考库不含它），接入参考库并验证 | 约 10 分钟，1 张卡 |
 | 4 GenEval | `setup_geneval.sh` | 评测环境装到 `<root>/geneval/`（H100 上 mmcv 自动源码编译），装完自检。失败只警告，不影响训练开始，之后可以单独重跑 | 5–10 分钟 |
 | 5 训练 | `train_sw_lmmd.sh` | SW-LMMD 训练，2000 步；每 200 步存一个 checkpoint，每 100 步更新一次断点文件 `resume.pth` | 估计每步 8–15 秒，共 5–9 小时（以前几步的 s/step 为准） |
 
 所有文件都放在 `--root` 下面：`env.sh`、`hf/`（权重）、`geneval/`（评测环境和检测器）、`sw_lmmd/{reference_store, qwen3_ctx_coco.npy, work_dirs/, logs/}`。pip 和 conda 的下载缓存也放在 `<root>/.cache/` 下。`rdm` 这个 conda 环境装在 conda 自己的 envs 目录（约 12 GB）。**磁盘预算约 315 GB**：权重约 26 GB，参考库 8.5 GB（解压时临时再多 8.5 GB），context 61 GB，GenEval 约 12 GB，缓存约 5 GB，checkpoint 每个 15.5 GB（H100 一共存 10 个，155 GB），`resume.pth` 23 GB（覆盖写入时临时 2 份）。
 
-**Drive 下载可能很慢**：2026-10-01 在这台机器上实测，参考库 tar 包前一半大约 30 MB/s，之后被 Google Drive 限速到约 0.5 MB/s，整个第 2 阶段可能要一两个小时。脚本会一直等它下完，不需要处理；也可以先用别的方式把 tar 包拷过去，再 `export SW_STORE_TAR=<路径>`。
+**为什么用 HF 而不是 Drive**：同一个 9.1 GB 的 tar 包，2026-10-01 在这台机器上实测，HF 约 2 分钟，Drive 超过 2 小时。训练本身只要 5–9 小时，用 Drive 等于白白多付 2 个多小时的 H100 钱。
 
 **5. 常用选项：**
 
@@ -422,7 +424,7 @@ CUDA_VISIBLE_DEVICES="" python -m pytest tests -q     # 只用 CPU，约 1 分�
 - **卡数必须整除 128**：可以是 1/2/4/8/16/32。
 - **不要用旧配置** `sw_lmmd_h100_2gpu.yaml` 和 `sw_lmmd_debug_4x4090.yaml`：它们把参数存成 bf16，在 lr 2.83e-6 下 klein-4B 有 96% 的权重一步也不会更新。`train_sw_lmmd.sh` 头部注释里的示例还是这两个旧配置，请用 `sw_lmmd_train_*.yaml`。
 - **`env.sh`**：`HF_HOME` 必须是 hub 缓存的上一级目录（FLUX 权重只按 `HF_HOME` 查找）。换机器时记得设 `ASSETS`：启动脚本找不到 `env.sh` 时会静默跳过，要到加载模型时才报错。
-- **参考库里的 `qwen_context.npy` 是软链接**，指向 61 GB 的 `qwen3_ctx_coco.npy`。上传到 Drive 的版本不含它，新机器用 `preprocess_all-new-machine.sh` 重新生成。如果要在机器之间直接拷贝完整的参考库，要用 `rsync -aL`，否则软链接会失效。
+- **参考库里的 `qwen_context.npy` 是软链接**，指向 61 GB 的 `qwen3_ctx_coco.npy`。上传到 HF / Drive 的版本不含它，新机器用 `preprocess_all-new-machine.sh` 重新生成。如果要在机器之间直接拷贝完整的参考库，要用 `rsync -aL`，否则软链接会失效。
 - **新机器必须用同一个 `coco_pairs.npz`**：context 的第 i 行要对应参考库里第 i 个 prompt。`download_all.sh` 下载的就是这份文件，会用 md5 校验。
 - **直接用 torchrun 时的 `--set`**：顶层键名拼错会被静默忽略，所以改路径优先直接改 yaml。
 - 预处理必须按 01 → 02 → 03 的顺序。`preprocess_all.sh` 会自动保证顺序，单独跑某一步时要自己注意。

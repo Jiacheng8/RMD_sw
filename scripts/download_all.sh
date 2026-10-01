@@ -9,13 +9,14 @@
 #   bash scripts/download_all.sh --root <dir> --minimal      # only what training from that store needs
 #   bash scripts/download_all.sh --root <dir> --sw-lmmd-store-only   # just the store (e.g. a retry)
 #
-# Also fetches OUR prebuilt SW-LMMD reference store (~8.5 GB) from Google Drive with rclone into
-# <root>/sw_lmmd/, so a new machine skips the ~31 h teacher render. It ships without its 61 GB
-# Qwen3 context; rebuild that in ~10 min with scripts/preprocess_all-new-machine.sh.
-# Needs an rclone remote for that Drive: `rclone config`, a Google Drive remote named "gdrive",
-# authorised with the account that owns SW-RDM/ (a folder merely shared with you is not at
-# gdrive:SW-RDM). Both files are md5-checked against the published versions.
-#   SW_STORE_RCLONE=myremote:SW-RDM bash scripts/download_all.sh ...   # another remote / folder
+# Also fetches OUR prebuilt SW-LMMD reference store (9.1 GB tar) into <root>/sw_lmmd/, so a new
+# machine skips the ~31 h teacher render. It ships without its 61 GB Qwen3 context; rebuild that in
+# ~10 min with scripts/preprocess_all-new-machine.sh. Source: the PRIVATE Hugging Face dataset
+# jiachengcui888/sw-rdm-reference-store (the HF token must be able to read it), else -- fallback, much
+# slower -- Google Drive through an rclone remote "gdrive" authorised with the account that owns
+# SW-RDM/. Both files are md5-checked against the published versions.
+#   SW_STORE_HF=user/other-dataset bash scripts/download_all.sh ...   # another HF dataset (empty: skip HF)
+#   SW_STORE_RCLONE=myremote:SW-RDM bash scripts/download_all.sh ...   # another rclone remote / folder
 #   SW_STORE_TAR=/path/reference_store_noctx.tar bash scripts/download_all.sh ...  # archive already here
 #
 # What it fetches (~50 GB, + 13.5 GB once COCO is extracted):
@@ -41,6 +42,11 @@ set -euo pipefail
 export PYTHONNOUSERSITE=1   # packages in ~/.local/lib/pythonX.Y must never shadow the conda envs'
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# This machine's Hugging Face token: write it into <repo>/.hf_token (git-ignored, never committed)
+# instead of exporting it in every shell. An exported HF_TOKEN still wins.
+if [[ -z "${HF_TOKEN:-}" && -s "$REPO_ROOT/.hf_token" ]]; then
+  HF_TOKEN="$(tr -d '[:space:]' < "$REPO_ROOT/.hf_token")"; export HF_TOKEN
+fi
 ROOT=""
 CONDA_ENV="${CONDA_ENV:-rdm}"
 HF_CACHE="${HF_CACHE:-}"
@@ -49,7 +55,10 @@ PASSTHRU=()
 SW_STORE=1
 SW_ONLY=0
 MINIMAL=0
-# The prebuilt SW-LMMD reference store on Google Drive, fetched with rclone.
+# The prebuilt SW-LMMD reference store: a private Hugging Face dataset first -- measured 78 MB/s,
+# the 9.1 GB tar in ~2 min, resumable -- and Google Drive via rclone as the fallback (Drive throttled
+# to ~0.3 MB/s after a few GB: over 2 h for the same tar). SW_STORE_HF= (empty) skips HF.
+SW_STORE_HF="${SW_STORE_HF-jiachengcui888/sw-rdm-reference-store}"
 RCLONE_SRC="${SW_STORE_RCLONE:-gdrive:SW-RDM}"
 # md5s of the published files (`rclone md5sum gdrive:SW-RDM`); env-overridable, so a re-uploaded
 # store needs no edit here. The only reliable completeness check: GNU `tar -t` exits 0 on an
@@ -114,19 +123,40 @@ if [[ $SW_STORE -eq 1 ]]; then
   if [[ -f "$SW_DIR/reference_store/metadata.json" ]]; then
     echo "    $SW_DIR/reference_store already present, skipping"
   elif [[ ${#PASSTHRU[@]} -gt 0 ]]; then
-    echo "    --dry-run: would rclone coco_pairs.npz (12 MB) and reference_store_noctx.tar (~8.5 GB)"
-    echo "    from $RCLONE_SRC, check both md5s and untar into $SW_DIR"
+    echo "    --dry-run: would fetch coco_pairs.npz (12 MB) and reference_store_noctx.tar (9.1 GB)"
+    echo "    from the HF dataset ${SW_STORE_HF:-<off>} (else rclone $RCLONE_SRC), check both md5s and"
+    echo "    untar into $SW_DIR"
     [[ -n "${SW_STORE_TAR:-}" ]] && echo "    (archive taken from $SW_STORE_TAR instead)"
   else
     mkdir -p "$SW_DIR"
     have_rclone() { command -v rclone >/dev/null 2>&1 \
                       && rclone listremotes 2>/dev/null | grep -qx "${RCLONE_SRC%%:*}:"; }
     md5_is() { [[ -f "$1" && "$(md5sum "$1" | cut -d' ' -f1)" == "$2" ]]; }
-    get() {     # get <file name> <dest> <md5>: a VERIFIED copy of $RCLONE_SRC/<file> at dest
+    get_hf() {  # get_hf <file name> <dest>: $SW_STORE_HF/<file> from the Hub into dest's directory
+      [[ -n "$SW_STORE_HF" ]] || return 1
+      echo "    HF dataset $SW_STORE_HF: $1"
+      "${RUN[@]}" - "$SW_STORE_HF" "$1" "$(dirname "$2")" <<'PY'
+import sys
+from huggingface_hub import hf_hub_download
+repo, name, dest = sys.argv[1:]
+try:                         # resumes a partial download; needs read access to the private repo
+    hf_hub_download(repo, name, repo_type="dataset", local_dir=dest)
+except Exception as e:
+    print(f"    HF download failed: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr)
+    sys.exit(1)
+PY
+    }
+    get() {     # get <file name> <dest> <md5>: a VERIFIED copy at dest -- from HF, else from rclone
       md5_is "$2" "$3" && return 0
-      have_rclone || { echo "    no rclone remote '${RCLONE_SRC%%:*}:' -- install rclone and run 'rclone config'" \
-                            "(a Google Drive remote named ${RCLONE_SRC%%:*}, authorised with the account" \
-                            "that owns ${RCLONE_SRC#*:}/), or set SW_STORE_RCLONE" >&2; return 1; }
+      if get_hf "$1" "$2"; then
+        md5_is "$2" "$3" && return 0
+        echo "    $2: md5 differs from the published file -- deleted" >&2
+        rm -f "$2"
+      fi
+      have_rclone || { echo "    could not get $1 from the HF dataset ${SW_STORE_HF:-<off>} (token without read" \
+                            "access to it?) and there is no rclone remote '${RCLONE_SRC%%:*}:' to fall back to" >&2
+                       return 1; }
+      echo "    falling back to rclone $RCLONE_SRC (Google Drive: slow)"
       rclone copyto -P "$RCLONE_SRC/$1" "$2" || { rm -f "$2"; return 1; }   # rclone cannot resume it anyway
       md5_is "$2" "$3" && return 0
       echo "    $2: md5 differs from the published file -- deleted" >&2

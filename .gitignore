@@ -13,6 +13,9 @@ dist/
 venv/
 .env
 
+# Local secrets -- NEVER committed (the repo is public). The scripts read the HF token from here.
+.hf_token
+
 # Large artifacts (downloaded / precomputed, never committed)
 checkpoints/
 work_dirs/
