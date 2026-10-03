@@ -16,8 +16,9 @@ Layering (see :mod:`rdm.sw_lmmd.config`): :mod:`window_schedule`, :mod:`cache` a
 :mod:`sharding` holds the distribution contract that makes the parameter gradient identical at
 any world size; :mod:`trainer` orchestrates.
 """
+from .adversarial import AdversarialCritic, FeatureCritic, build_critic
 from .cache import EncoderCacheEntry, GeneratedWindowCache
-from .config import CacheConfig, KernelConfig, MemoryPolicy, WindowConfig
+from .config import CacheConfig, GANConfig, KernelConfig, MemoryPolicy, WindowConfig
 from .local_mmd import ExactLocalMMD, MMDMonitor
 from .reference_store import ReferenceFeatureStore, write_reference_store
 from .refresh import probe_drift, refresh_retained, should_refresh
@@ -26,9 +27,10 @@ from .trainer import SWLMMDTrainer
 from .window_schedule import SlidingWindowSchedule, WindowBatch, build_row_order, order_hash
 
 __all__ = [
-    "CacheConfig", "EncoderCacheEntry", "ExactLocalMMD", "GeneratedWindowCache", "KernelConfig",
-    "MMDMonitor", "MemoryPolicy", "ReferenceFeatureStore", "SWLMMDTrainer",
-    "SlidingWindowSchedule", "WindowBatch", "WindowConfig", "all_gather_detached",
-    "build_row_order", "order_hash", "partition_rows", "probe_drift", "refresh_retained",
-    "row_noise", "row_seed", "should_refresh", "write_reference_store",
+    "AdversarialCritic", "CacheConfig", "EncoderCacheEntry", "ExactLocalMMD", "FeatureCritic",
+    "GANConfig", "GeneratedWindowCache", "KernelConfig", "MMDMonitor", "MemoryPolicy",
+    "ReferenceFeatureStore", "SWLMMDTrainer", "SlidingWindowSchedule", "WindowBatch",
+    "WindowConfig", "all_gather_detached", "build_critic", "build_row_order", "order_hash",
+    "partition_rows", "probe_drift", "refresh_retained", "row_noise", "row_seed",
+    "should_refresh", "write_reference_store",
 ]

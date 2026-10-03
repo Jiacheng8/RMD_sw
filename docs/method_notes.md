@@ -47,3 +47,30 @@ wrong and that the code pins deliberately.
   config learning rates assume the `scale = 1/grad_accum` + AVG convention.
 - **pMF-H.** The released network is vendored so the checkpoint loads; `convert_pmf_checkpoint`
   maps the flax-style keys (and skips the on-the-fly `rope_freqs` buffer).
+
+## The adversarial term (SW-LMMD, `rdm/sw_lmmd/adversarial.py`)
+
+- **The critic belongs in the loss, not in `encode_fn`.** It scores GradCache's cached features
+  in the middle phase, so pass 1 and pass 2 stay deterministic whatever the critic does in
+  between. A critic inside `encode_fn` would need identical weights, spectral-norm vectors and
+  augmentations in both passes.
+- **Frozen in the generator's graph.** The adversarial term is built with the critic's
+  parameters set to `requires_grad=False`. Otherwise the generator's backward also accumulates
+  into the critic.
+- **Same prompts on both sides.** Real and fake are the same window rows, so they share their
+  `τ(c)` and the critic cannot score the caption distribution instead of the images.
+- **Same encoder pipeline on both sides.** The store's features came from fp32 encoder weights.
+  A bf16-weight battery (`battery_bf16: true`) is a signature a linear probe already detects on
+  identical images (53–56 % held out, vs 50 % with fp32 weights, 4096 teacher renders,
+  2026-10-03), and the generator cannot remove it.
+- **λ is a gradient ratio.** The raw `|∂adv/∂φ| / |∂force/∂φ|` is ~2000–2800 on the real store
+  against the base 1-step student, and it moves as the critic sharpens. A fixed λ would need to
+  sit near 1e-4 and would drift away from it. The norms cover the image columns only (the
+  `β·τ` block has no path to the generator) and are summed over ranks, so every rank applies
+  the same λ.
+- **Hinge saturation.** On a fixed 512-row set, the critic separates train rows perfectly within
+  10 steps and then stops learning (zero hinge gradient). The sliding window keeps it supplied
+  with unseen rows: its accuracy on not-yet-seen active rows rose 0.68 → 0.95 over 24 steps.
+- **Step checkpoints never carry the critic** (they are what gets evaluated). `resume.pth` does,
+  including its AdamW moments, under FSDP too, since the critic is replicated rather than
+  sharded.

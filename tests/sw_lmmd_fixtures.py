@@ -74,20 +74,29 @@ def build_toy_store(root: str, num_rows: int = 64, seed: int = 3) -> str:
 
 def build_trainer(store_root: str, *, window: int = 16, stride: int = 4, micro_batch: int = 1,
                   lr: float = 0.0, grad_clip: float = 0.0, seed: int = 0, joint: bool = True,
-                  monitor_every: int = 1, model_seed: int = 0, dtype=torch.float64):
-    """Assemble a trainer over the toy store; ``lr=0`` keeps parameters fixed for grad checks."""
-    from rdm.sw_lmmd import CacheConfig, SWLMMDTrainer
+                  monitor_every: int = 1, model_seed: int = 0, dtype=torch.float64,
+                  gan: dict | None = None, lr_schedule=None):
+    """Assemble a trainer over the toy store; ``lr=0`` keeps parameters fixed for grad checks.
+
+    ``gan`` adds the adversarial critic: :class:`rdm.sw_lmmd.GANConfig` overrides on top of a
+    toy-sized head (``hidden=16``) and no warm-up."""
+    from rdm.sw_lmmd import CacheConfig, GANConfig, SWLMMDTrainer, build_critic
 
     store = ReferenceFeatureStore(store_root, NAMES)
     schedule = SlidingWindowSchedule(store.row_order(), window_size=window, stride=stride)
     generator = ToyGenerator(seed=model_seed, dtype=dtype)
     optimizer = torch.optim.AdamW(generator.model.parameters(), lr=lr)
+    critic = None
+    if gan is not None:
+        cfg = GANConfig(**{"enabled": True, "hidden": 16, "g_start_step": 0, **gan})
+        critic = build_critic(cfg, store, list(NAMES), joint=joint, device="cpu", dtype=dtype)
     trainer = SWLMMDTrainer(generator, MockBattery(dtype=dtype), store, schedule, optimizer,
                             encoder_names=list(NAMES), noise_shape=(NOISE_DIM,),
                             micro_batch=micro_batch, grad_clip=grad_clip, kernel_block=8,
                             seed=seed, joint=joint, monitor_every=monitor_every,
                             cache_cfg=CacheConfig(store_dtype=dtype),
-                            device="cpu", feature_dtype=dtype, context_dtype=dtype)
+                            device="cpu", feature_dtype=dtype, context_dtype=dtype,
+                            critic=critic, lr_schedule=lr_schedule)
     return trainer
 
 

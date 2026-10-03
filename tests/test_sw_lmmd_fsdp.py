@@ -106,6 +106,16 @@ def sharded(store, tmp_path_factory):
     return _run(2, store, str(tmp_path_factory.mktemp("sw_fsdp_sharded")), "--fsdp")
 
 
+@pytest.fixture(scope="module")
+def unsharded_gan(store, tmp_path_factory):
+    return _run(1, store, str(tmp_path_factory.mktemp("sw_fsdp_plain_gan")), "--gan")
+
+
+@pytest.fixture(scope="module")
+def sharded_gan(store, tmp_path_factory):
+    return _run(2, store, str(tmp_path_factory.mktemp("sw_fsdp_sharded_gan")), "--fsdp", "--gan")
+
+
 @requires_flux2
 @pytest.mark.parametrize("step", [2, 3])
 def test_sharded_weights_match_unsharded(unsharded, sharded, init_state, step):
@@ -186,17 +196,34 @@ def test_bf16_master_weights_warn(caplog):
     assert "rounds to nothing" in caplog.text
 
 
-@pytest.mark.parametrize("name,world,grad_accum", [
-    ("sw_lmmd_train_h100_2gpu.yaml", 2, 8),
-    ("sw_lmmd_train_4x4090.yaml", 4, 32),
+@pytest.mark.parametrize("name,world,grad_accum,window", [
+    ("sw_lmmd_train_h100_2gpu.yaml", 2, 2, (128, 32)),
+    ("sw_lmmd_train_h100_2gpu_gan.yaml", 2, 2, (128, 32)),
+    ("sw_lmmd_train_4x4090.yaml", 4, 32, (1024, 128)),
 ])
-def test_training_configs_resolve(name, world, grad_accum):
+def test_training_configs_resolve(name, world, grad_accum, window):
     from rdm.sw_lmmd.launch import memory_from_config, resolve_batching, window_from_config
     from rdm.train.launch import load_config
 
     cfg = load_config(os.path.join(CONFIGS, name))
     policy = memory_from_config(cfg)
     assert cfg.method == "sw_lmmd" and policy.param_dtype == torch.float32
-    batching = resolve_batching(cfg, policy, window_from_config(cfg), world_size=world)
+    w = window_from_config(cfg)
+    assert (w.size, w.stride) == window and w.size % world == 0       # the critic shards K
+    batching = resolve_batching(cfg, policy, w, world_size=world)
     assert batching["grad_accum"] == grad_accum
     assert os.path.isabs(cfg.reference_root) and os.path.isabs(cfg.output_dir)
+
+
+@requires_flux2
+def test_sharded_run_with_the_critic_matches_unsharded(unsharded_gan, sharded_gan):
+    """The replicated critic beside the FSDP generator: same weights, same critic trajectory."""
+    want, got = _ckpt(unsharded_gan, 3)["model"], _ckpt(sharded_gan, 3)["model"]
+    for name, value in want.items():
+        torch.testing.assert_close(got[name], value, rtol=1e-4, atol=1e-6, msg=name)
+    w_log, g_log = _log(unsharded_gan), _log(sharded_gan)
+    assert ["gan/lambda" in r for r in g_log] == [False, True, True]     # g_start_step=1
+    for w, g in zip(w_log, g_log):
+        for key in ("force", "loss_total", "gan/d_loss", "gan/d_acc"):
+            assert g[key] == pytest.approx(w[key], rel=1e-4, abs=1e-8), (key, w["step"])
+    assert _log(sharded_gan)[-1]["loss_total"] != _log(sharded_gan)[-1]["force"]

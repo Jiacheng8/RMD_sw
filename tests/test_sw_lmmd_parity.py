@@ -40,13 +40,14 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _run(world: int, store: str, out_dir: str, micro_batch: int = 1, steps: int = 2) -> dict:
+def _run(world: int, store: str, out_dir: str, micro_batch: int = 1, steps: int = 2,
+         gan: bool = False) -> dict:
     """Launch ``world`` worker processes and return rank 0's recorded state."""
-    out = os.path.join(out_dir, f"w{world}_mb{micro_batch}.pt")
+    out = os.path.join(out_dir, f"w{world}_mb{micro_batch}{'_gan' if gan else ''}.pt")
     env = dict(os.environ, MASTER_ADDR="127.0.0.1", MASTER_PORT=str(_free_port()),
                WORLD_SIZE=str(world), OMP_NUM_THREADS="1")
     cmd = [sys.executable, WORKER, "--store", store, "--out", out,
-           "--micro-batch", str(micro_batch), "--steps", str(steps)]
+           "--micro-batch", str(micro_batch), "--steps", str(steps)] + (["--gan"] if gan else [])
     procs = [subprocess.Popen(cmd, env=dict(env, RANK=str(r)), stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True) for r in range(world)]
     logs = []
@@ -107,3 +108,27 @@ def test_micro_batching_is_orthogonal_to_sharding(single, store_root, tmp_path):
         torch.testing.assert_close(got, want, rtol=1e-8, atol=1e-10)
     for got, want in zip(sharded["grads"], single["grads"]):
         torch.testing.assert_close(got, want, rtol=1e-8, atol=1e-10)
+
+
+# --------------------------------------------------------------------------------------
+# the adversarial term (rdm/sw_lmmd/adversarial.py) obeys the same contract
+# --------------------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def single_gan(store_root, tmp_path_factory):
+    return _run(1, store_root, str(tmp_path_factory.mktemp("sw_parity_gan")), gan=True)
+
+
+@pytest.mark.parametrize("world", [2, 4])
+def test_adversarial_term_is_world_size_invariant(world, single_gan, store_root, tmp_path):
+    """Critic step on a K/R share + mean-reduced critic grads == the critic step on all K;
+    the generator side telescopes like the force; lambda comes from globally summed norms."""
+    sharded = _run(world, store_root, str(tmp_path), gan=True)
+    for got, want in zip(sharded["grads"], single_gan["grads"]):
+        torch.testing.assert_close(got, want, rtol=1e-8, atol=1e-10)
+    assert sharded["critic"].keys() == single_gan["critic"].keys()
+    for key, want in single_gan["critic"].items():            # weights after two critic steps
+        torch.testing.assert_close(sharded["critic"][key], want, rtol=1e-8, atol=1e-10, msg=key)
+    for key in ("gan/lambda", "gan/d_loss", "gan/d_acc", "gan/grad_ratio"):
+        assert sharded["gan_logs"][key] == pytest.approx(single_gan["gan_logs"][key],
+                                                         rel=1e-8, abs=1e-12), key
+    assert sharded["force"] == pytest.approx(single_gan["force"], rel=1e-9, abs=1e-12)

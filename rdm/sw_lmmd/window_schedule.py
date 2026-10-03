@@ -152,6 +152,14 @@ class SlidingWindowSchedule:
             raise RuntimeError("row order hash mismatch on resume: this checkpoint was written "
                                "under a different permutation. Rebuild row_order with the "
                                "recorded seed, or resume with strict=False and re-bootstrap.")
+        saved = (int(state.get("window_size", self.window_size)),
+                 int(state.get("stride", self.stride)))
+        if strict and saved != (self.window_size, self.stride):
+            # The step counter means "slid `step` strides": under another K/B it names other
+            # windows, and a resume without the cache would train on them without complaint.
+            raise RuntimeError(f"window mismatch on resume: the checkpoint was written with "
+                               f"K={saved[0]} B={saved[1]}, this config has K={self.window_size} "
+                               f"B={self.stride}. Resume with the run's own config.")
         self.epoch = int(state.get("epoch", 0))
         self._configure(int(state.get("start_offset", 0)), bool(state.get("reverse", False)))
         self.step = int(state["step"])

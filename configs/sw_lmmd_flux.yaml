@@ -48,9 +48,42 @@ cache:
   refresh_probe_rows: 64      # re-rolled to measure drift; never trained on
   drift_threshold: 0.05
 
+# ---- Optional adversarial term (rdm/sw_lmmd/adversarial.py), off by default ----
+# A conditional critic on the same pooled features the force compares. Each step it trains on
+# the window (reference rows vs generated context, same prompts), and the generator loss adds
+# lambda * adversarial on the B live rows. GAN runs should set memory.battery_bf16: false: the
+# store was extracted with fp32 encoder weights, and a bf16-weight battery is a pipeline
+# difference the critic can learn instead of the images (see the module docstring).
+gan:
+  enabled: false
+  encoders: null              # critic heads; null = every training encoder
+  weight: 0.25                # adaptive: |g_adv| = weight * |g_mmd| on the cached image features
+  adaptive: true              # false: weight multiplies the raw adversarial loss
+  min_norm_ratio: 0.001       # caps lambda when the critic goes flat
+  loss: hinge                 # hinge | ns
+  lr: 2.0e-4                  # critic AdamW (write the dot: YAML reads 2e-4 as a string)
+  betas: [0.0, 0.99]
+  hidden: 1024
+  depth: 2
+  spectral_norm: true
+  r1_gamma: 0.0               # R1 on real features, on the standardized input; 0 = off
+  g_start_step: 50            # critic-only warm-up; the generator keeps training on the force.
+                              # Reported slightly better than adding the term from step 0.
+  conditional: true           # projection on tau(c); ignored when joint: false
+  stats_rows: 8192            # reference rows that fix the critic's input standardization
+  seed: 0
+
 # ---- Optimization ----
 active_global_batch: 128      # B; grad_accum is DERIVED from micro_batch x world
 lr: 2.83e-6
+# Generator lr schedule (rdm/sw_lmmd/config.py: LRSchedule), a function of the step counter, so
+# a resume needs no extra state. constant + no warm-up = the plain lr above. The critic's lr
+# (gan.lr) stays constant.
+lr_schedule:
+  name: constant              # constant | cosine | linear
+  warmup_steps: 0             # linear ramp lr * (s + 1) / warmup_steps
+  min_lr_ratio: 0.0           # cosine / linear decay floor, as a fraction of lr
+  total_steps: null           # decay horizon; null = `steps`
 grad_clip: 4.0
 steps: 2000
 save_freq: 50

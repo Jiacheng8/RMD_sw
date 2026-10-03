@@ -26,6 +26,7 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=2)
     ap.add_argument("--window", type=int, default=16)
     ap.add_argument("--stride", type=int, default=8)
+    ap.add_argument("--gan", action="store_true", help="add the adversarial critic")
     args = ap.parse_args()
 
     world = int(os.environ.get("WORLD_SIZE", "1"))
@@ -36,8 +37,11 @@ def main() -> int:
     # lr=0 freezes the parameters, so every world size differentiates the SAME function at the
     # SAME point; grad_clip=0 keeps the raw gradient (clipping is norm-dependent and would mask
     # a real discrepancy behind a rescale).
+    # The critic keeps its own lr, so with --gan step 2's generator gradient is scored by a
+    # critic that has already taken a step -- its weights must agree across world sizes too.
     trainer = build_trainer(args.store, window=args.window, stride=args.stride,
-                            micro_batch=args.micro_batch, lr=0.0, grad_clip=0.0)
+                            micro_batch=args.micro_batch, lr=0.0, grad_clip=0.0,
+                            gan={"weight": 0.5} if args.gan else None)
     trainer.bootstrap()
     logs = {}
     for _ in range(args.steps):
@@ -49,6 +53,9 @@ def main() -> int:
                     "raw_mmd2": logs["raw_mmd2"],
                     "cache": {n: e.features.clone() for n, e in trainer.cache.entries.items()},
                     "cache_rows": {n: e.row_ids for n, e in trainer.cache.entries.items()},
+                    "critic": None if trainer.critic is None else
+                    {k: v.clone() for k, v in trainer.critic.critic.state_dict().items()},
+                    "gan_logs": {k: v for k, v in logs.items() if k.startswith("gan/")},
                     "world": world, "micro_batch": args.micro_batch}, args.out)
     if world > 1:
         dist.barrier()

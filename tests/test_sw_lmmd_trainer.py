@@ -287,3 +287,20 @@ def test_store_rejects_out_of_range_prompt_ids(tmp_path):
                           prompt_ids=np.array([0, 1, 2, 3]))
     with pytest.raises(ValueError, match="prompt_ids indexes row"):
         ReferenceFeatureStore(str(root), ["e"], require_context=False)
+
+
+def test_lr_schedule_is_applied_before_every_step(store_root):
+    from rdm.sw_lmmd.config import LRSchedule
+
+    sched = LRSchedule("cosine", warmup_steps=2, min_lr_ratio=0.1, total_steps=6)
+    trainer = build_trainer(store_root, window=16, stride=4, lr=1e-2, lr_schedule=sched)
+    seen = []
+    trainer.train(6, log_fn=seen.append)
+    want = [1e-2 * sched.factor(s) for s in range(6)]
+    assert [r["lr"] for r in seen] == pytest.approx(want, rel=1e-12)
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(want[-1])
+    assert trainer.base_lrs == [1e-2]                       # applied to the base, never compounded
+
+    plain = build_trainer(store_root, window=16, stride=4, lr=1e-2)
+    plain.bootstrap()
+    assert [plain.step()["lr"] for _ in range(2)] == [1e-2, 1e-2]

@@ -71,6 +71,13 @@ def test_schedule_state_round_trip_and_order_guard():
     with pytest.raises(RuntimeError, match="row order hash"):
         other.load_state_dict(state)
 
+    # Same permutation, other window: the step counter would name different rows.
+    for k, b in ((8, 4), (16, 2)):
+        with pytest.raises(RuntimeError, match="window mismatch"):
+            SlidingWindowSchedule(order, window_size=k, stride=b).load_state_dict(state)
+    legacy = {key: v for key, v in state.items() if key not in ("window_size", "stride")}
+    SlidingWindowSchedule(order, window_size=8, stride=2).load_state_dict(legacy)  # predates them
+
 
 def test_new_epoch_changes_traversal():
     sched = SlidingWindowSchedule(build_row_order(64, seed=4), window_size=16, stride=4)
@@ -413,3 +420,45 @@ def test_optimizer_builder_rejects_unwired_modes():
     assert isinstance(build_optimizer(p, cfg, MemoryPolicy(optimizer="adamw")), torch.optim.AdamW)
     with pytest.raises(NotImplementedError, match="offload"):
         build_optimizer(p, cfg, MemoryPolicy(optimizer="adamw_offload"))
+
+
+# --------------------------------------------------------------------------------------
+# generator lr schedule
+# --------------------------------------------------------------------------------------
+def test_lr_schedule_shapes():
+    from rdm.sw_lmmd.config import LRSchedule
+
+    cos = LRSchedule("cosine", warmup_steps=10, min_lr_ratio=0.1, total_steps=110)
+    f = [cos.factor(s) for s in range(120)]
+    assert f[0] == pytest.approx(0.1) and f[9] == pytest.approx(1.0)     # (s+1)/10, never 0
+    assert f[10] == pytest.approx(1.0) and f[60] == pytest.approx(0.55)  # cosine midpoint
+    assert all(a >= b for a, b in zip(f[10:], f[11:]))                   # non-increasing
+    assert f[110] == f[119] == pytest.approx(0.1)                        # floor past the horizon
+    lin = LRSchedule("linear", total_steps=4)
+    assert [lin.factor(s) for s in range(5)] == pytest.approx([1.0, 0.75, 0.5, 0.25, 0.0])
+    assert LRSchedule().factor(0) == LRSchedule().factor(10 ** 9) == 1.0
+    assert LRSchedule(warmup_steps=4).factor(1) == 0.5                   # warm-up, then flat
+    with pytest.raises(ValueError, match="total_steps"):
+        LRSchedule("cosine").factor(5)
+    with pytest.raises(ValueError, match="constant / cosine / linear"):
+        LRSchedule("step").validate()
+
+
+def test_lr_schedule_configs():
+    from types import SimpleNamespace
+
+    from rdm.sw_lmmd.launch import lr_schedule_from_config
+    from rdm.train.launch import load_config
+
+    flux = lr_schedule_from_config(load_config("configs/sw_lmmd_flux.yaml"))
+    assert (flux.name, flux.warmup_steps) == ("constant", 0)           # default: the plain lr
+    assert lr_schedule_from_config(load_config("configs/sw_lmmd_train_4x4090.yaml")) == flux
+    for name in ("sw_lmmd_train_h100_2gpu.yaml", "sw_lmmd_train_h100_2gpu_gan.yaml"):
+        h100 = lr_schedule_from_config(load_config(f"configs/{name}"))
+        assert (h100.name, h100.warmup_steps, h100.min_lr_ratio, h100.total_steps) == \
+            ("cosine", 100, 0.1, 2000)
+    cfg = load_config("configs/sw_lmmd_train_h100_2gpu.yaml")
+    cfg.steps = 20                                                        # --set steps=20 (gate)
+    assert lr_schedule_from_config(cfg).total_steps == 20
+    with pytest.raises(ValueError, match="unknown key"):
+        lr_schedule_from_config(SimpleNamespace(lr_schedule={"warmup": 10}, steps=5))

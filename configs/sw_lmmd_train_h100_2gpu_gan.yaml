@@ -1,0 +1,51 @@
+# SW-LMMD + the adversarial critic on 2 x H100 80GB.
+#
+#   torchrun --nproc_per_node=2 -m rdm.sw_lmmd.launch configs/sw_lmmd_train_h100_2gpu_gan.yaml
+#   (or: GPUS=2 bash scripts/train_sw_lmmd.sh configs/sw_lmmd_train_h100_2gpu_gan.yaml)
+#
+# The method and machine of sw_lmmd_train_h100_2gpu.yaml, plus `gan:` and one memory change:
+#
+#   battery_bf16: false   The critic compares the store's features, extracted with fp32 encoder
+#                         weights, against the training battery's. On the same 4096 teacher
+#                         renders, a held-out linear probe separates bf16-weight features from
+#                         the stored ones at 53-56 %, and fp32-weight features at 50 % (chance).
+#                         Cost: the 3 encoders go 2.8 -> 5.6 GB, plus ~2.8 GB of bf16 weight
+#                         casts autocast keeps for the backward -> ~72 GB / 80 GB [ESTIMATE].
+#
+# The critic itself is ~11 M params (weights + grads + AdamW ~0.2 GB), replicated, and costs
+# no rollout: it scores the cached features GradCache already holds. It inherits the base
+# config's K=128 / B=32 window, so each critic step sees 128 rows (64 per rank) instead of 1024;
+# offline, on the base 1-step student, it still separated unseen rows at ~95 % by steps 26-50,
+# which the 50-step warm-up covers. The OOM fallback is
+# unchanged: --set memory.micro_batch=4.
+#
+# `extends` merges top-level keys only, so both blocks below are restated in full.
+extends: sw_lmmd_train_h100_2gpu.yaml
+exp_name: sw-lmmd-flux-h100-2gpu-gan
+
+memory:
+  shard: none
+  grad_reduce: mean
+  optimizer: adamw8bit
+  param_dtype: fp32
+  battery_bf16: false         # see above: the critic needs the store's encoder pipeline
+  micro_batch: 8
+  encoder_offload: false
+
+gan:
+  enabled: true
+  encoders: null
+  weight: 0.25                # a starting point, not a tuned value -- sweep 0.1 / 0.25 / 0.5 / 1
+  adaptive: true
+  min_norm_ratio: 0.001
+  loss: hinge
+  lr: 2.0e-4
+  betas: [0.0, 0.99]
+  hidden: 1024
+  depth: 2
+  spectral_norm: true
+  r1_gamma: 0.0
+  g_start_step: 50
+  conditional: true
+  stats_rows: 8192
+  seed: 0

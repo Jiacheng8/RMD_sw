@@ -38,6 +38,7 @@ def main() -> int:
     ap.add_argument("--save-freq", type=int, default=2)
     ap.add_argument("--window", type=int, default=16)
     ap.add_argument("--stride", type=int, default=4)
+    ap.add_argument("--gan", action="store_true", help="add the adversarial critic")
     args = ap.parse_args()
 
     world = int(os.environ.get("WORLD_SIZE", "1"))
@@ -49,8 +50,8 @@ def main() -> int:
                                 timeout=datetime.timedelta(seconds=120))
 
     from rdm.representation.generators.flux_generator import FluxGenerator
-    from rdm.sw_lmmd import (CacheConfig, MemoryPolicy, ReferenceFeatureStore, SWLMMDTrainer,
-                             SlidingWindowSchedule)
+    from rdm.sw_lmmd import (CacheConfig, GANConfig, MemoryPolicy, ReferenceFeatureStore,
+                             SWLMMDTrainer, SlidingWindowSchedule, build_critic)
     from rdm.sw_lmmd.launch import build_optimizer, shard_generator, train
 
     policy = MemoryPolicy(shard="fsdp" if args.fsdp else "none",
@@ -72,12 +73,16 @@ def main() -> int:
     store = ReferenceFeatureStore(args.store, NAMES)
     schedule = SlidingWindowSchedule(store.row_order(), window_size=args.window,
                                      stride=args.stride)
+    # The critic is replicated beside the sharded generator; its gradient all-reduce runs inside
+    # the loss, between FSDP's pass-1 forward and pass-2 backward.
+    critic = build_critic(GANConfig(enabled=True, hidden=16, g_start_step=1, weight=0.5), store,
+                          list(NAMES), device="cpu") if args.gan else None
     trainer = SWLMMDTrainer(generator, LatentBattery(), store, schedule, optimizer,
                             encoder_names=list(NAMES),
                             noise_shape=(128, FLUX_LATENT, FLUX_LATENT),
                             micro_batch=policy.micro_batch, grad_clip=1e6, kernel_block=8,
                             seed=0, grad_reduce=policy.grad_reduce, clip_module=clip_module,
-                            cache_cfg=CacheConfig(), device="cpu")
+                            cache_cfg=CacheConfig(), device="cpu", critic=critic)
 
     cfg = SimpleNamespace(steps=args.steps, save_freq=args.save_freq, output_dir=args.out_dir,
                           exp_name="run", print_freq=1, probe_every=1,

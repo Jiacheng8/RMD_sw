@@ -161,3 +161,55 @@ def test_adamw8bit_state_round_trip(tmp_path):
     steps(resumed, opt, 3, 3)
     for a, b in zip(full.parameters(), resumed.parameters()):
         assert torch.equal(a, b)
+
+
+def _assert_same_critic(a, b):
+    sa, sb = a.state_dict(), b.state_dict()
+    assert sa["updates"] == sb["updates"]
+    for key, value in sa["critic"].items():                  # weights, stats, spectral-norm u/v
+        assert torch.equal(value, sb["critic"][key]), key
+    oa, ob = sa["optimizer"]["state"], sb["optimizer"]["state"]
+    assert oa.keys() == ob.keys()
+    for k in oa:
+        for key in ("exp_avg", "exp_avg_sq"):
+            assert torch.equal(oa[k][key], ob[k][key])
+
+
+def test_loop_resume_with_the_critic_matches_uninterrupted_run(store, tmp_path):
+    """resume.pth carries the critic and its AdamW moments; step checkpoints still do not."""
+    gan = {"weight": 0.5, "g_start_step": 2}           # the warm-up ends inside the first segment
+    full = train(_cfg(str(tmp_path / "full"), 6), device="cpu",
+                 trainer=build_trainer(store, lr=LR, gan=gan))
+
+    run = str(tmp_path / "part")
+    train(_cfg(run, 4), device="cpu", trainer=build_trainer(store, lr=LR, gan=gan))
+    resume = os.path.join(run, "run", "resume.pth")
+    assert "critic" in torch.load(resume, weights_only=False, mmap=True)
+    resumed = train(_cfg(run, 6, resume_from=resume), device="cpu",
+                    trainer=build_trainer(store, lr=LR, gan=gan))
+    _assert_same_run(full, resumed)
+    _assert_same_critic(full.critic, resumed.critic)
+
+    ckpt = torch.load(os.path.join(run, "run", "step_0000004.pth"), weights_only=False)
+    assert set(ckpt) == {"model", "step", "schedule", "world_size"}
+    logged = [json.loads(line) for line in open(os.path.join(run, "run", "train_log.jsonl"))]
+    assert [r["step"] for r in logged] == list(range(1, 7))
+    assert ["gan/lambda" in r for r in logged] == [False, False, True, True, True, True]
+
+
+def test_loop_resume_with_an_lr_schedule_matches_uninterrupted_run(store, tmp_path):
+    """The schedule is a function of the step counter: restoring the step restores the lr."""
+    from rdm.sw_lmmd.config import LRSchedule
+
+    def sched():
+        return LRSchedule("cosine", warmup_steps=3, min_lr_ratio=0.1, total_steps=8)
+
+    full = train(_cfg(str(tmp_path / "full"), 8), device="cpu",
+                 trainer=build_trainer(store, lr=LR, lr_schedule=sched()))
+    run = str(tmp_path / "part")
+    train(_cfg(run, 4), device="cpu", trainer=build_trainer(store, lr=LR, lr_schedule=sched()))
+    resumed = train(_cfg(run, 8, resume_from=os.path.join(run, "run", "resume.pth")),
+                    device="cpu", trainer=build_trainer(store, lr=LR, lr_schedule=sched()))
+    _assert_same_run(full, resumed)
+    lrs = [json.loads(line)["lr"] for line in open(os.path.join(run, "run", "train_log.jsonl"))]
+    assert lrs == pytest.approx([LR * sched().factor(s) for s in range(8)], rel=1e-12)

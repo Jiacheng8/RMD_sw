@@ -129,6 +129,42 @@ exactly:
 So one config ports from a single GPU to a 32-rank job unchanged. `B = 128` divides 1, 2, 4, 8,
 16 and 32.
 
+### Optional: an adversarial term
+
+`gan.enabled: true` adds a conditional critic (`rdm/sw_lmmd/adversarial.py`) on the same pooled
+features the force compares. It has one projection head per encoder, conditioned on `τ(c)`, and
+standardized by fixed reference statistics. The critic lives in GradCache's middle phase, so
+it costs no rollout and no encoder forward, and passes 1 and 2 are unchanged. Each step:
+
+```
+pass 1  -> cached active features
+critic  -> one step on the K-row window: reference rows (real) vs generated context (fake),
+           same prompts on both sides, K/R rows per rank, gradients mean-reduced
+loss    =  force + λ · adversarial(active rows, scored by the UPDATED critic, frozen)
+pass 2  -> generator gradient;   λ = weight · |∂force/∂φ| / |∂adv/∂φ|   (global norms)
+```
+
+λ is adaptive because the raw scales are unrelated. On the real store against the base 1-step
+student, `|∂adv/∂φ| / |∂force/∂φ| ≈ 2000–2800`, so `weight` is a gradient-norm ratio in feature
+space rather than a raw loss multiplier. World-size parity, GradCache exactness, FSDP and
+bit-exact resume are all tested with the critic on.
+
+Two measured facts to plan around:
+
+- **The store and the critic's fakes must come from the same encoder pipeline.** The store was
+  extracted with fp32 encoder weights. With `memory.battery_bf16: true`, a held-out linear probe
+  separates stored from re-encoded features of the *same* 4096 teacher images at 53–56 %. With
+  fp32 weights it is at chance (50.0–50.2 %). GAN runs therefore use `battery_bf16: false`
+  (`configs/sw_lmmd_train_h100_2gpu_gan.yaml`, ~72 GB/card estimated); the launcher warns
+  otherwise.
+- **The critic's gradient is nearly orthogonal to the force's** (cosine ≈ 0). Moving fakes
+  along it barely changes the window MMD² (0.00483 → 0.00476, against 0.00345 along the force).
+  It is a complementary signal, so judge it on GenEval/PickScore rather than on `raw_mmd2`, and
+  sweep `weight`.
+
+The critic sees one pooled vector per image, as the MMD does. A token-level critic (ADD-style)
+would see more, but it needs the teacher renders online and the critic inside `encode_fn`.
+
 ---
 
 ## The reference
@@ -252,7 +288,8 @@ REFERENCE_ROOT=/data/<you>/rdm-sets/sw_lmmd/reference_store \
 GPUS=2 bash scripts/train_sw_lmmd.sh configs/sw_lmmd_h100_2gpu.yaml
 ```
 
-`GPUS` must divide `B = 128`. `FSDP=1` if the card cannot hold the training state,
+`GPUS` must divide `B` (128 by default; the H100 configs use `K = 128, B = 32`).
+`FSDP=1` if the card cannot hold the training state,
 `MICRO_BATCH=<n>` to trade throughput for memory, `STEPS=<n>` for a short gate run. The
 preflight prints the resolved window, batching, memory estimate and store path before
 torchrun starts.
@@ -308,6 +345,7 @@ rdm/sw_lmmd/          this fork's method
   reference_store.py    mmap row-addressed reference (sharded ctx, row→prompt indirection)
   trainer.py            bootstrap → GradCache two-pass → force → reduce → slide
   refresh.py            staleness probe and refresh
+  adversarial.py        optional conditional critic on the cached features (gan: block)
   launch.py             config → objects, training loop, entry point
 
 rdm/compare/          upstream: kernels, Nyström, the iRDM loss + ablation distances

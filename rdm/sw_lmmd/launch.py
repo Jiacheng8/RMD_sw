@@ -19,7 +19,7 @@ import torch
 
 from ..utils.distributed import get_world_size
 from .cache import GeneratedWindowCache
-from .config import CacheConfig, MemoryPolicy, WindowConfig
+from .config import CacheConfig, GANConfig, LRSchedule, MemoryPolicy, WindowConfig
 from .reference_store import ReferenceFeatureStore
 from .trainer import SWLMMDTrainer
 from .window_schedule import SlidingWindowSchedule
@@ -63,6 +63,46 @@ def memory_from_config(cfg) -> MemoryPolicy:
                        "of klein-4B's weights at lr 2.83e-6 in bf16). Prefer fp32 master weights.",
                        policy.param_dtype)
     return policy
+
+
+def gan_from_config(cfg) -> GANConfig:
+    """The ``gan:`` block. Unknown keys are refused: the block is all-optional, so a typo would
+    otherwise silently fall back to a default."""
+    raw = _block(cfg, "gan")
+    unknown = sorted(set(raw) - set(GANConfig.__dataclass_fields__))
+    if unknown:
+        raise ValueError(f"gan: unknown key(s) {unknown} (known: "
+                         f"{sorted(GANConfig.__dataclass_fields__)})")
+    if "betas" in raw:
+        raw["betas"] = tuple(raw["betas"])
+    gan = GANConfig(**raw)
+    gan.validate()
+    return gan
+
+
+def lr_schedule_from_config(cfg) -> LRSchedule:
+    """The ``lr_schedule:`` block (unknown keys refused, as for ``gan:``). A decay horizon left
+    unset is the run's ``steps``, including a ``--set steps=`` override."""
+    raw = _block(cfg, "lr_schedule")
+    unknown = sorted(set(raw) - set(LRSchedule.__dataclass_fields__))
+    if unknown:
+        raise ValueError(f"lr_schedule: unknown key(s) {unknown} (known: "
+                         f"{sorted(LRSchedule.__dataclass_fields__)})")
+    schedule = LRSchedule(**raw)
+    if schedule.total_steps is None and getattr(cfg, "steps", None):
+        schedule.total_steps = int(cfg.steps)
+    schedule.validate()
+    return schedule
+
+
+def warn_gan_pipeline(gan: GANConfig, policy: MemoryPolicy) -> None:
+    """Warn when the critic would compare features from two different encoder pipelines."""
+    if gan.enabled and policy.battery_bf16:
+        logger.warning("[sw_lmmd] gan.enabled with memory.battery_bf16=true: the critic compares "
+                       "the store's features (fp32 encoder weights) with bf16-weight features, a "
+                       "difference a linear probe already detects on identical images (53-56% "
+                       "held out, vs 50% with fp32 weights). Prefer battery_bf16: false for GAN "
+                       "runs -- see rdm/sw_lmmd/adversarial.py.")
 
 
 def resolve_batching(cfg, policy: MemoryPolicy, window: WindowConfig,
@@ -208,6 +248,21 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
         if getattr(cfg, "mode", "flux") == "flux" else \
         (3, getattr(cfg, "img_size", 256), getattr(cfg, "img_size", 256))
 
+    gan, critic = gan_from_config(cfg), None
+    if gan.enabled:
+        from .adversarial import build_critic
+        warn_gan_pipeline(gan, policy)
+        critic = build_critic(gan, store, names, joint=getattr(cfg, "joint", True), device=device)
+        logger.info("[sw_lmmd] GAN critic: heads %s | %.1f M params | weight %g (%s) | %s loss | "
+                    "lr %g | generator term from step %d", critic.names,
+                    sum(p.numel() for p in critic.critic.parameters()) / 1e6, gan.weight,
+                    "adaptive" if gan.adaptive else "fixed", gan.loss, gan.lr, gan.g_start_step)
+
+    lr_schedule = lr_schedule_from_config(cfg)
+    logger.info("[sw_lmmd] lr %g, schedule %s (warm-up %d, floor %gx, horizon %s steps)",
+                cfg.lr, lr_schedule.name, lr_schedule.warmup_steps, lr_schedule.min_lr_ratio,
+                lr_schedule.total_steps)
+
     return SWLMMDTrainer(
         generator, battery, store, schedule,
         build_optimizer([p for p in model.parameters() if p.requires_grad], cfg, policy),
@@ -217,7 +272,8 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
         kernel_block=int(_block(cfg, "loss").get("kernel_block_size", 256)),
         seed=getattr(cfg, "seed", 0), joint=getattr(cfg, "joint", True),
         grad_reduce=policy.grad_reduce, monitor_every=getattr(cfg, "monitor_every", 1),
-        cache_cfg=cache_from_config(cfg), clip_module=clip_module, device=device)
+        cache_cfg=cache_from_config(cfg), clip_module=clip_module, device=device, critic=critic,
+        lr_schedule=lr_schedule)
 
 
 def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SWLMMDTrainer:
@@ -230,13 +286,14 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
     this loop with a tiny model); by default it is built from ``cfg``.
 
     ``step_NNNNNNN.pth`` checkpoints are weights-only unless ``save_optimizer: true`` (for fp32
-    AdamW that is 31 GB per save); they are what gets evaluated.
+    AdamW that is 31 GB per save); they are what gets evaluated, so they never carry the critic.
 
     Resume: with ``save_resume: true`` the loop also keeps ONE ``resume.pth`` -- weights,
-    optimizer moments (not under FSDP, whose optimizer is sharded), the schedule position and
-    the generated cache -- rewritten every ``resume_every`` steps (default ``save_freq``) and at
-    the end. ``resume_from: <that file>`` continues the run where it stopped: same step counter,
-    same windows, same optimizer state, so the remaining steps are those of an uninterrupted run.
+    optimizer moments (not under FSDP, whose optimizer is sharded), the schedule position, the
+    generated cache and, with ``gan.enabled``, the critic with its optimizer -- rewritten every
+    ``resume_every`` steps (default ``save_freq``) and at the end. ``resume_from: <that file>``
+    continues the run where it stopped: same step counter, same windows, same optimizer state,
+    so the remaining steps are those of an uninterrupted run.
     Every file is written beside its target and renamed into place, so a crash mid-write never
     leaves a truncated checkpoint where a good one was.
     """
@@ -271,7 +328,8 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
     def checkpoint():
         # EVERY rank builds the state: under FSDP the full state dict is a collective gather,
         # and a rank-0-only call blocks until the NCCL timeout. Only rank 0 writes it.
-        state = trainer.state_dict(with_cache=save_cache, with_optimizer=save_optimizer)
+        state = trainer.state_dict(with_cache=save_cache, with_optimizer=save_optimizer,
+                                   with_critic=False)
         if is_main_process():
             path = os.path.join(out_dir, f"step_{trainer.step_idx:07d}.pth")
             write(state, path)
@@ -290,11 +348,13 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
         state = torch.load(resume_from, map_location="cpu", weights_only=False, mmap=True)
         restored = trainer.load_state_dict(state)
         del state
-        logger.info("[sw_lmmd] resumed %s at step %d (weights %s, optimizer %s, cache %s)",
+        logger.info("[sw_lmmd] resumed %s at step %d (weights %s, optimizer %s, cache %s%s)",
                     resume_from, restored["step"],
                     "loaded" if restored["model"] else "from load_from",
                     "restored" if restored["optimizer"] else "FRESH",
-                    "restored" if restored["cache"] else "re-bootstrapped")
+                    "restored" if restored["cache"] else "re-bootstrapped",
+                    "" if "critic" not in restored else
+                    ", critic " + ("restored" if restored["critic"] else "FRESH"))
     if not trainer.cache.initialized:
         logger.info("[sw_lmmd] bootstrap ...")
         boot = trainer.bootstrap()
@@ -319,10 +379,14 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
 
         if is_main_process():
             if trainer.step_idx % int(getattr(cfg, "print_freq", 1)) == 0:
-                logger.info("step %d | force %.6f | raw_mmd2 %.6g | grad_norm %s | "
-                            "cache_age %d | %.1f s", logs["step"], logs["force"],
-                            logs.get("raw_mmd2", float("nan")), logs["grad_norm"],
-                            logs["cache_max_age"], logs["seconds"])
+                gan = "" if "gan/d_acc" not in logs else \
+                    " | D acc %.3f real %+.3f fake %+.3f | lambda %s" % (
+                        logs["gan/d_acc"], logs["gan/d_real"], logs["gan/d_fake"],
+                        "%.4g" % logs["gan/lambda"] if "gan/lambda" in logs else "off")
+                logger.info("step %d | force %.6f | raw_mmd2 %.6g | grad_norm %s | lr %.3g | "
+                            "cache_age %d | %.1f s%s", logs["step"], logs["force"],
+                            logs.get("raw_mmd2", float("nan")), logs["grad_norm"], logs["lr"],
+                            logs["cache_max_age"], logs["seconds"], gan)
             jsonl.write(json.dumps(logs) + "\n")
             jsonl.flush()
         if trainer.step_idx % save_freq == 0:

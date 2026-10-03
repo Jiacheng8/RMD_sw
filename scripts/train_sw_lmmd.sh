@@ -10,7 +10,7 @@
 #
 # Multi-node: set NNODES / NODE_RANK / MASTER_ADDR / MASTER_PORT, as in scripts/train.sh.
 #
-# The window (K=1024, B=128) is fixed by the config and is the same on every machine;
+# The window is fixed by the config (K=1024, B=128 by default; the H100 configs use K=128, B=32);
 # tests/test_sw_lmmd_parity.py shows the parameter gradient is identical at world 1/2/4, so
 # GPUS only changes throughput, never the objective. It must divide B.
 #
@@ -62,7 +62,8 @@ fi
 conda run -n "$CONDA_ENV" --no-capture-output python - "$CONFIG" "$GPUS" "${OVERRIDES[@]}" <<'PY'
 import sys, os
 from rdm.train.launch import load_config
-from rdm.sw_lmmd.launch import apply_override, memory_from_config, resolve_batching, window_from_config
+from rdm.sw_lmmd.launch import (apply_override, gan_from_config, lr_schedule_from_config,
+                                memory_from_config, resolve_batching, window_from_config)
 
 cfg_path, gpus = sys.argv[1], int(sys.argv[2])
 cfg = load_config(cfg_path)
@@ -91,6 +92,16 @@ print(f"    memory        shard={m.shard} reduce={m.grad_reduce} opt={m.optimize
       f"param={str(m.param_dtype).replace('torch.','')} battery_bf16={m.battery_bf16}")
 print(f"    est. per-card ~{est:.0f} GB  (activation term is an estimate; halve micro_batch if it OOMs)")
 print(f"    encoders      {len(cfg.encoders)}: {','.join(cfg.encoders)}")
+sch = lr_schedule_from_config(cfg)
+print(f"    lr            {cfg.lr:g}, {sch.name}" + (f", warm-up {sch.warmup_steps}" if sch.warmup_steps else "")
+      + (f", decays to {sch.min_lr_ratio:g}x by step {sch.total_steps}" if sch.name != "constant" else ""))
+g = gan_from_config(cfg)
+if g.enabled:
+    print(f"    gan           critic on {','.join(g.encoders or cfg.encoders)} | weight {g.weight} "
+          f"({'adaptive' if g.adaptive else 'fixed'}) | {g.loss} | lr {g.lr} | from step {g.g_start_step}")
+    if m.battery_bf16:
+        print("    WARNING       gan with battery_bf16=true: the critic can learn the bf16-vs-fp32 "
+              "encoder pipeline gap (see rdm/sw_lmmd/adversarial.py); prefer battery_bf16: false")
 print(f"    reference     {root}")
 print(f"    steps         {cfg.steps}  ->  {getattr(cfg,'output_dir','./work_dirs')}/{cfg.exp_name}")
 if getattr(cfg, "save_resume", False):

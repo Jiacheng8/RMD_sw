@@ -34,6 +34,11 @@ Per-encoder weights are uniform. The global iRDM self-normalization and PID floo
 deliberately not reused: they are defined for an MMD^2 scalar, whereas the force surrogate is
 signed and passes through zero, so dividing by its own magnitude is not a scale-free
 reparametrization of the same objective.
+
+With a ``critic`` (:mod:`rdm.sw_lmmd.adversarial`), the middle step also takes one critic step
+on the window and adds ``lambda * adversarial`` to the force before the backward. Passes 1 and
+2 are unchanged. The logged ``force`` stays the force alone, and ``loss_total`` is what was
+back-propagated.
 """
 from __future__ import annotations
 
@@ -64,7 +69,7 @@ class SWLMMDTrainer:
                  monitor_every: int = 1, cache_cfg: CacheConfig | None = None,
                  clip_module=None, device: str = "cuda",
                  feature_dtype: torch.dtype = torch.float32,
-                 context_dtype: torch.dtype | None = None):
+                 context_dtype: torch.dtype | None = None, critic=None, lr_schedule=None):
         self.generator = generator
         self.battery = battery
         self.store = store
@@ -94,6 +99,19 @@ class SWLMMDTrainer:
             {name: 1.0 / n for name in self.encoder_names}      # uniform (spec sec. 14.1)
         self.sigmas = {name: store.sigma(name) for name in self.encoder_names}
         self.betas = {name: store.beta(name) for name in self.encoder_names}
+        self.image_dims = {name: store.dim(name) for name in self.encoder_names}
+
+        # Optional adversarial term. Its critic step splits the K window rows over ranks, so K
+        # must divide like B does (K = 1024 divides every world size B = 128 does).
+        self.critic = critic
+        if critic is not None and schedule.window_size % get_world_size():
+            raise ValueError(f"window size {schedule.window_size} is not divisible by "
+                             f"world_size={get_world_size()}; the critic step shards the window")
+
+        # The generator's lr schedule (config.LRSchedule): a function of step_idx, applied to the
+        # base lr each group was built with, so resuming it is resuming the step counter.
+        self.lr_schedule = lr_schedule
+        self.base_lrs = [float(g["lr"]) for g in optimizer.param_groups]
 
         self.step_idx = 0
         self._pending_window = None
@@ -154,6 +172,33 @@ class SWLMMDTrainer:
         return self.store.reference_joint_features(encoder_name, row_ids, device=self.device,
                                                    dtype=self.feature_dtype, joint=self.joint)
 
+    def _adversarial(self, force, local_feats: dict, window_feats: dict, window, local_active,
+                     logs: dict):
+        """Critic step on the window, then ``force + lambda * adversarial`` on the live rows.
+
+        ``window_feats`` holds each critic encoder's ``(generated context, reference)``, both
+        ``K`` rows in window order and detached. This rank trains the critic on its contiguous
+        ``K/R`` share of them. The generator side then uses only this rank's live active rows,
+        exactly like the force.
+        """
+        critic = self.critic
+        share = partition_rows(np.arange(window.all_ids.size))
+        lo, hi = int(share[0]), int(share[-1]) + 1
+        tau = self.store.text_features(window.all_ids[lo:hi], device=self.device,
+                                       dtype=self.feature_dtype) if critic.conditional else None
+        logs.update(critic.update({n: ctx[lo:hi] for n, (ctx, _) in window_feats.items()},
+                                  {n: ref[lo:hi] for n, (_, ref) in window_feats.items()}, tau))
+        if not critic.generator_active(self.step_idx):
+            return force
+        tau = self.store.text_features(local_active, device=self.device,
+                                       dtype=self.feature_dtype) if critic.conditional else None
+        adv, adv_logs = critic.generator_loss(local_feats, tau)
+        lam, bal_logs = critic.balance(force, adv, local_feats, self.image_dims)
+        logs.update(adv_logs)
+        logs.update(bal_logs)
+        logs["_force"] = float(force.detach())
+        return force + lam * adv
+
     # ------------------------------------------------------------------ bootstrap
     def bootstrap(self) -> dict:
         """Fill the cache with the first window's retained rows under the current parameters.
@@ -185,10 +230,19 @@ class SWLMMDTrainer:
         return {"epoch": epoch, **logs}
 
     # ------------------------------------------------------------------ one step
+    def _apply_lr_schedule(self) -> float:
+        """Set this step's lr on every param group; return the first group's."""
+        if self.lr_schedule is not None:
+            factor = self.lr_schedule.factor(self.step_idx)
+            for group, base in zip(self.optimizer.param_groups, self.base_lrs):
+                group["lr"] = base * factor
+        return float(self.optimizer.param_groups[0]["lr"])
+
     def step(self) -> dict:
         if not self.cache.initialized:
             raise RuntimeError("call bootstrap() before the first step -- the retained half of "
                                "the first window has to exist before it can be compared against")
+        lr = self._apply_lr_schedule()
         window = self._pending_window or self.schedule.next()
         self._pending_window = None
         local_active = partition_rows(window.active_ids)
@@ -199,6 +253,7 @@ class SWLMMDTrainer:
 
         def loss_fn(local_feats: dict):
             total, logs, raws = None, {}, []
+            window_feats = {}                 # critic encoders' (context, reference), if any
             for name in self.encoder_names:
                 active = local_feats[name]
                 glob = all_gather_detached(active)
@@ -217,14 +272,20 @@ class SWLMMDTrainer:
                     m = self.mmd.monitor(context, reference, self.sigmas[name])
                     logs.update(m.as_log(prefix=f"{name}/"))
                     raws.append(float(m.mmd2))
+                if self.critic is not None and name in self.critic.names:
+                    window_feats[name] = (context, reference)
                 del reference, context
             if raws:
                 logs["raw_mmd2"] = float(np.mean(raws))      # uniform mean, NOT the trained scalar
+            if self.critic is not None:
+                total = self._adversarial(total, local_feats, window_feats, window,
+                                          local_active, logs)
             return total, logs
 
         self.optimizer.zero_grad(set_to_none=True)
-        force_val, logs = gradcache_backward(chunks, self._encode, loss_fn,
-                                             scale=1.0, gather=False)
+        loss_val, logs = gradcache_backward(chunks, self._encode, loss_fn,
+                                            scale=1.0, gather=False)
+        force_val = logs.pop("_force", loss_val)      # the force alone, without adversarial
 
         if self.grad_reduce == "mean":
             for p in self._gen_params:                # no DDP/FSDP wrapper -> reduce here
@@ -233,7 +294,7 @@ class SWLMMDTrainer:
         grad_norm = clip_generator_grads(self._gen_params, self.grad_clip,
                                          module=self.clip_module) if self.grad_clip > 0 else None
 
-        finite = np.isfinite(force_val) and (grad_norm is None or torch.isfinite(grad_norm))
+        finite = np.isfinite(loss_val) and (grad_norm is None or torch.isfinite(grad_norm))
         if finite:
             self.optimizer.step()
         else:
@@ -244,10 +305,12 @@ class SWLMMDTrainer:
         self.step_idx += 1
         out = {"step": self.step_idx, "window_step": window.step, "epoch": window.epoch,
                "force": reduce_scalar(force_val), "skipped": not finite,
-               "grad_norm": float(grad_norm) if grad_norm is not None else None,
+               "grad_norm": float(grad_norm) if grad_norm is not None else None, "lr": lr,
                "cache_max_age": self.cache.max_age(window.step),
                "active_rows": int(window.active_ids.size),
                "active_rows_per_rank": int(local_active.size), **logs}
+        if self.critic is not None:
+            out["loss_total"] = reduce_scalar(loss_val)     # force + lambda * adversarial
         self._last_logs = out
         return out
 
@@ -261,10 +324,14 @@ class SWLMMDTrainer:
         return self.step_idx
 
     # ------------------------------------------------------------------ checkpointing
-    def state_dict(self, with_cache: bool = True, with_optimizer: bool = True) -> dict:
-        """Model + schedule (+ optimizer) (+ cache). Without the cache a resume MUST re-bootstrap:
-        carrying features produced by different parameters, or by a different permutation,
-        silently trains against the wrong context.
+    def state_dict(self, with_cache: bool = True, with_optimizer: bool = True,
+                   with_critic: bool = True) -> dict:
+        """Model + schedule (+ optimizer) (+ cache) (+ critic). Without the cache a resume MUST
+        re-bootstrap: carrying features produced by different parameters, or by a different
+        permutation, silently trains against the wrong context.
+
+        The critic entry (weights, standardization, AdamW moments) is replicated rather than
+        sharded, so unlike the generator's optimizer it can be resumed under FSDP too.
 
         Under FSDP the model entry is a collective gather, so every rank must call this; only
         rank 0 receives the full weights."""
@@ -276,6 +343,8 @@ class SWLMMDTrainer:
             state["optimizer"] = self.optimizer.state_dict()
         if with_cache:
             state["cache"] = self.cache.state_dict()
+        if with_critic and self.critic is not None:
+            state["critic"] = self.critic.state_dict()
         return state
 
     def load_state_dict(self, state: dict) -> dict:
@@ -306,4 +375,8 @@ class SWLMMDTrainer:
         if state.get("cache"):
             self.cache.load_state_dict(state["cache"], device=self.device)
             restored["cache"] = True
+        if self.critic is not None:                     # absent -> the critic starts fresh
+            restored["critic"] = state.get("critic") is not None
+            if restored["critic"]:
+                self.critic.load_state_dict(state["critic"])
         return restored

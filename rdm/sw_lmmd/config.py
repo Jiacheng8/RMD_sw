@@ -2,8 +2,9 @@
 
 The package is deliberately layered so the algorithm never learns about the hardware:
 
-* :class:`WindowConfig` / :class:`CacheConfig` / :class:`KernelConfig` describe the
-  **method**. They are identical on one 4090 and on thirty-two H200s.
+* :class:`WindowConfig` / :class:`CacheConfig` / :class:`KernelConfig` / :class:`GANConfig` /
+  :class:`LRSchedule` describe the **method**. They are identical on one 4090 and on thirty-two
+  H200s.
 * :class:`MemoryPolicy` describes the **machine**. Everything that differs between a 24 GB
   consumer card and an 80 GB datacenter card lives here and is consumed only by the launch
   layer and the trainer's plumbing -- never by :mod:`rdm.sw_lmmd.local_mmd`,
@@ -15,6 +16,7 @@ by :meth:`MemoryPolicy.resolve_grad_accum`. The default ``B = 128`` divides 1, 2
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -73,6 +75,94 @@ class CacheConfig:
     # NOTE: the spec suggests fp16 storage. The whole cache is ~55 MB at K=1024 over ten
     # encoders, so fp32 costs nothing measurable and avoids quantizing the context the
     # kernel sees. Set to torch.float16 if you are memory-bound.
+
+
+@dataclass
+class LRSchedule:
+    """The generator's learning-rate schedule, a pure function of the step counter.
+
+    It is stateless on purpose. The factor is recomputed from ``step_idx`` before every
+    optimizer step, so a resume restores the lr by restoring the step counter, and
+    ``resume.pth`` needs nothing extra. A skipped (non-finite) step still advances it, like the
+    window. The decay horizon is ``total_steps``, which defaults to the run's ``steps``, so
+    extending a run on resume reshapes the rest of the curve.
+    """
+
+    name: str = "constant"                # constant | cosine | linear
+    warmup_steps: int = 0                 # linear ramp lr * (s + 1) / warmup_steps
+    min_lr_ratio: float = 0.0             # decay floor as a fraction of lr (cosine / linear)
+    total_steps: int | None = None        # decay horizon; None = the run's `steps`
+
+    def validate(self) -> None:
+        if self.name not in ("constant", "cosine", "linear"):
+            raise ValueError(f"lr_schedule.name must be constant / cosine / linear, "
+                             f"got {self.name!r}")
+        if self.warmup_steps < 0:
+            raise ValueError("lr_schedule.warmup_steps must be >= 0")
+        if not 0.0 <= self.min_lr_ratio <= 1.0:
+            raise ValueError("lr_schedule.min_lr_ratio must be in [0, 1]")
+        if self.total_steps is not None and self.total_steps <= 0:
+            raise ValueError("lr_schedule.total_steps must be positive")
+
+    def factor(self, step: int) -> float:
+        """Multiplier on the base lr for the optimizer step taken at 0-based ``step``.
+
+        Warm-up never yields 0, since a zero-lr step would waste a full rollout.
+        """
+        if step < self.warmup_steps:
+            return (step + 1) / self.warmup_steps
+        if self.name == "constant":
+            return 1.0
+        if self.total_steps is None:
+            raise ValueError("a decaying lr schedule needs total_steps (the launcher fills it "
+                             "from `steps`)")
+        progress = min(1.0, (step - self.warmup_steps) / max(1, self.total_steps -
+                                                              self.warmup_steps))
+        shape = 0.5 * (1.0 + math.cos(math.pi * progress)) if self.name == "cosine" else \
+            1.0 - progress
+        return self.min_lr_ratio + (1.0 - self.min_lr_ratio) * shape
+
+
+@dataclass
+class GANConfig:
+    """The optional adversarial term (:mod:`rdm.sw_lmmd.adversarial`). Off by default.
+
+    ``weight`` is the knob that matters. With ``adaptive`` it is a *ratio*: the adversarial
+    gradient on the cached image features is scaled to ``weight x`` the MMD force's gradient
+    there, so it neither vanishes nor swamps the force as the critic sharpens. Without
+    ``adaptive`` it multiplies the raw adversarial loss, whose gradient scale is unrelated to
+    the force's ``1/(BK)`` and drifts with the critic -- a value that works early stops working
+    later.
+    """
+
+    enabled: bool = False
+    encoders: list | None = None          # critic heads; None = every training encoder
+    weight: float = 0.25                  # lambda (a gradient-norm ratio under ``adaptive``)
+    adaptive: bool = True
+    min_norm_ratio: float = 1e-3          # adaptive: floor on |g_adv| / |g_mmd| (caps lambda)
+    loss: str = "hinge"                   # hinge | ns (non-saturating logistic)
+    lr: float = 2e-4
+    betas: tuple = (0.0, 0.99)
+    hidden: int = 1024
+    depth: int = 2                        # hidden layers per head
+    spectral_norm: bool = True
+    r1_gamma: float = 0.0                 # R1 penalty on real features (0 = off)
+    g_start_step: int = 50                # critic-only warm-up: the generator ignores it before
+    conditional: bool = True              # projection on tau(c); off when ``joint`` is off
+    stats_rows: int = 8192                # reference rows that fix the input standardization
+    seed: int = 0
+
+    def validate(self) -> None:
+        if self.loss not in ("hinge", "ns"):
+            raise ValueError(f"gan.loss must be 'hinge' or 'ns', got {self.loss!r}")
+        if self.weight < 0 or self.lr < 0 or self.r1_gamma < 0:
+            raise ValueError("gan.weight, gan.lr and gan.r1_gamma must be non-negative")
+        if self.hidden <= 0 or self.depth <= 0 or self.stats_rows <= 1:
+            raise ValueError("gan.hidden, gan.depth must be positive and gan.stats_rows > 1")
+        if len(tuple(self.betas)) != 2:
+            raise ValueError(f"gan.betas must be two numbers, got {self.betas!r}")
+        if not 0.0 < self.min_norm_ratio <= 1.0:
+            raise ValueError("gan.min_norm_ratio must be in (0, 1]")
 
 
 @dataclass

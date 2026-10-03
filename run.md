@@ -12,7 +12,7 @@
 | 预处理 02 | 老师 4 步出图，每 prompt 24 张，PickScore 留 4 张 | 4090 机，6 卡 | 约 31 小时（实测） | `teacher_renders/`（331,132 张 PNG） |
 | 预处理 03 | 10 个编码器提特征，组装参考库 | 4090 机，6 卡 | 0.5–1 小时（估计） | `reference_store/`（约 70 GB，含 context） |
 | 训练 gate | 20 步，检查显存和速度（H100 上不需要单独跑，见 3.3） | 4090 或 H100 | 4090 每步 5.3 分钟（实测） | 日志、1 个 checkpoint |
-| 正式训练 | 2000 步 | 4090 或 H100 | 4090 约 9 天；2×H100 估计 5–9 小时（以前几步的 s/step 为准）；可断点续训 | checkpoint、`resume.pth` |
+| 正式训练 | 2000 步 | 4090 或 H100 | 4090 约 9 天；2×H100 每步只新生成 32 张，比 B=128 时估计的 5–9 小时快几倍（以前几步的 s/step 为准）；可断点续训 | checkpoint、`resume.pth` |
 | 评测 | GenEval + PickScore（`eval_checkpoint.sh`） | 任意 1 张空闲卡 | 每个 checkpoint 约 22 分钟（4090 实测） | `<out>/summary.json` |
 
 **当前进度（2026-10-01）**：
@@ -93,7 +93,7 @@ nvidia-smi
 
 | 变量 | 作用 |
 |---|---|
-| `GPUS` | 卡数（默认 2），必须整除 128 |
+| `GPUS` | 卡数（默认 2），必须整除 B（H100 配置 B=32，4090 配置 B=128） |
 | `STEPS` | 覆盖训练步数 |
 | `MICRO_BATCH` | 覆盖 micro-batch |
 | `REFERENCE_ROOT` | 覆盖参考库路径 |
@@ -106,10 +106,21 @@ nvidia-smi
 
 | 机器 | 配置 | GPUS | 设置 |
 |---|---|---|---|
-| 4 × RTX 4090（这台） | `configs/sw_lmmd_train_4x4090.yaml` | 4 | FSDP 4 路切分，fp32 主权重，bf16 all-gather，8-bit AdamW，micro 1 × accum 32，约 17–19 GB/卡（估计） |
-| 2 × H100 80GB | `configs/sw_lmmd_train_h100_2gpu.yaml` | 2 | 不切分，fp32 主权重，8-bit AdamW，micro 8 × accum 8，约 66 GB/卡（估计） |
+| 4 × RTX 4090（这台） | `configs/sw_lmmd_train_4x4090.yaml` | 4 | K=1024、B=128；FSDP 4 路切分，fp32 主权重，bf16 all-gather，8-bit AdamW，micro 1 × accum 32，约 17–19 GB/卡（估计） |
+| 2 × H100 80GB | `configs/sw_lmmd_train_h100_2gpu.yaml` | 2 | **K=128、B=32**；不切分，fp32 主权重，8-bit AdamW，micro 8 × accum 2，约 66 GB/卡（估计） |
 
-两个配置训练的是同一个目标：3 个编码器（dinov3_l、siglip2、aimv2_huge），K=1024，B=128，2000 步，只有显存相关的设置不同。
+两个配置的编码器（dinov3_l、siglip2、aimv2_huge）、lr 和步数（2000）相同，但**窗口不同**：
+
+- 4090 配置用方法默认值 K=1024、B=128：每步新生成 128 张，缓存最老 7 步。
+- H100 配置改成了 K=128、B=32：每步新生成 32 张，缓存最老 3 步。2000 步一共只生成 6.4 万张，B=128 时是 25.6 万张。
+
+所以两台机器训练的目标不同，结果不能直接比。H100 的 GAN 配置（3.6 节）继承同样的 K=128、B=32。
+
+**学习率调度**（`lr_schedule:` 块）：H100 两个配置都是前 100 步线性预热，然后用余弦从 2.83e-6 降到它的 10%，到第 2000 步结束。4090 配置还是固定学习率。
+
+- 学习率是按步数直接算出来的，断点续训不需要额外保存调度器的状态，续上后的学习率和没中断时完全一样。
+- 衰减终点默认就是 `steps`：gate 用 `STEPS=20` 时，会在 20 步内走完整条曲线；用 `--set steps=N` 延长训练时，剩下的曲线会被重新拉长。
+- 判别器的学习率（`gan.lr`）不跟着调度，一直固定。
 
 ### 3.2 在 4090 机器上
 
@@ -147,7 +158,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 GPUS=4 bash scripts/train_sw_lmmd.sh configs/sw_lmm
 | 第一条命令 | `bash scripts/new_machine.sh --root <数据盘>/rdm-sets --dry-run`：检查都通过、没有 ERROR，再去掉 `--dry-run` 正式跑 |
 | 前 30 分钟左右 | 第 2 阶段下载（参考库从 HF 下载约 2 分钟）；第 2 阶段结束时 8 个模型都应显示 `same` |
 | 训练开始后 15 分钟内 | 看到 `step 1 ...`；`nvidia-smi` 显存在 80 GB 以下；记下每步秒数 |
-| 第 100 步 | 日志出现 `resume state (step 100) -> ... in N s`，说明断点文件能写（N 是写盘秒数）；之后任何中断都用 `--resume` 接着跑 |
+| 第 400 步 | 日志出现 `resume state (step 400) -> ... in N s`，说明断点文件能写（N 是写盘秒数）；之后任何中断都用 `--resume` 接着跑 |
 | 训练结束 | 两张卡并行评测（第 7 步）→ 拷走结果（第 9 步）→ 确认拷完再退租 |
 
 **新机器上要事先准备好的**：
@@ -201,11 +212,11 @@ bash scripts/new_machine.sh --root /data/<你>/rdm-sets
 | 2 下载 | `download_all.sh --minimal` | 编码器、FLUX（klein-4B、VAE、Qwen3-4B）（只下训练实际用到的 3 个编码器）、评测用的 PickScore、flux2 源码（固定在 commit `50fe516`），约 26 GB；下载完会核对每个模型文件和参考结果用的是否一致；再从 HF 私有 dataset 下载参考库和 `coco_pairs.npz`（备用：rclone），校验 md5 后解压 | 这台机器上约 5–10 分钟（HF 实测 78 MB/s） |
 | 3 预处理 | `preprocess_all-new-machine.sh` | 用 Qwen3 重新生成 61 GB 的 context（上传的参考库不含它），接入参考库并验证 | 约 10 分钟，1 张卡 |
 | 4 GenEval | `setup_geneval.sh` | 评测环境装到 `<root>/geneval/`（H100 上 mmcv 自动源码编译），装完自检。失败只警告，不影响训练开始，之后可以单独重跑 | 5–10 分钟 |
-| 5 训练 | `train_sw_lmmd.sh` | SW-LMMD 训练，2000 步；每 200 步存一个 checkpoint，每 100 步更新一次断点文件 `resume.pth` | 估计每步 8–15 秒，共 5–9 小时（以前几步的 s/step 为准） |
+| 5 训练 | `train_sw_lmmd.sh` | SW-LMMD 训练（K=128、B=32），2000 步；每 200 步存一个 checkpoint，每 400 步更新一次断点文件 `resume.pth` | 每步只新生成 32 张，比 B=128 时估计的每步 8–15 秒快几倍（以前几步的 s/step 为准） |
 
 所有文件都放在 `--root` 下面：`env.sh`、`hf/`（权重）、`geneval/`（评测环境和检测器）、`sw_lmmd/{reference_store, qwen3_ctx_coco.npy, work_dirs/, logs/}`。pip 和 conda 的下载缓存也放在 `<root>/.cache/` 下。`rdm` 这个 conda 环境装在 conda 自己的 envs 目录（约 12 GB）。**磁盘预算约 315 GB**：权重约 26 GB，参考库 8.5 GB（解压时临时再多 8.5 GB），context 61 GB，GenEval 约 12 GB，缓存约 5 GB，checkpoint 每个 15.5 GB（H100 一共存 10 个，155 GB），`resume.pth` 23 GB（覆盖写入时临时 2 份）。
 
-**为什么用 HF 而不是 Drive**：同一个 9.1 GB 的 tar 包，2026-10-01 在这台机器上实测，HF 不到 3 分钟（含校验和解压），Drive 超过 2 小时。训练本身只要 5–9 小时，用 Drive 等于白白多付 2 个多小时的 H100 钱。
+**为什么用 HF 而不是 Drive**：同一个 9.1 GB 的 tar 包，2026-10-01 在这台机器上实测，HF 不到 3 分钟（含校验和解压），Drive 超过 2 小时。训练本身只要几个小时，用 Drive 等于白白多付 2 个多小时的 H100 钱。
 
 **5. 常用选项：**
 
@@ -228,7 +239,7 @@ bash scripts/new_machine.sh --root <dir> --resume                    # 训练中
   1. bootstrap 完成，开始打印 `step 1 | force ... | ... s`；
   2. `nvidia-smi` 显存稳定在 80 GB 以下（约 66 GB/卡是估算），前 20 步里第 10 步的漂移探针和第 20 步的缓存刷新都没有 OOM。如果 OOM，加 `--micro-batch 4` 重新开始，梯度不变；
   3. 用每步秒数乘 2000，估算总时长；
-  4. 第 100 步出现 `resume state (step 100) -> .../resume.pth in N s`，说明存盘没问题。
+  4. 第 400 步出现 `resume state (step 400) -> .../resume.pth in N s`，说明存盘没问题。
 - 仍然想先单独测一下的话：`--gate`（20 步，输出到 `work_dirs_gate/`）。
 
 **6. 不用这个脚本、手动来做：**
@@ -261,7 +272,7 @@ cat $RUN/eval_summary.md
 
 **8. 训练中断了怎么办（断点续训）：**
 
-- 训练每 100 步把完整状态覆盖写入 `<run dir>/resume.pth`：权重、8-bit AdamW 状态、窗口位置和缓存。写入方式是先写临时文件再改名，中途崩溃也不会损坏原来的文件。
+- 训练每 400 步把完整状态覆盖写入 `<run dir>/resume.pth`：权重、8-bit AdamW 状态、窗口位置和缓存。写入方式是先写临时文件再改名，中途崩溃也不会损坏原来的文件。
 - 不管是 SSH 断开、机器重启还是进程崩溃，先确认没有训练进程还在跑（`nvidia-smi` 里显存应该已经释放），再在 tmux 里执行：
 
   ```bash
@@ -269,7 +280,7 @@ cat $RUN/eval_summary.md
   ```
 
   如果原来开跑时还加了别的选项（`--gpus`、`--config`、`--output-dir`、`--steps`、`--micro-batch`），这里要带上同样的选项。`--resume` 会自动跳过第 1–4 阶段。
-- 接着跑的部分和没中断时**逐位一致**（`tests/test_sw_lmmd_resume.py` 验证过，8-bit AdamW 在 GPU 上也验证过），所以最多损失 100 步，按估计的速度约 15–25 分钟。日志接着写在原来的 `train_log.jsonl` 里，checkpoint 编号也接着排。
+- 接着跑的部分和没中断时**逐位一致**（`tests/test_sw_lmmd_resume.py` 验证过，8-bit AdamW 在 GPU 上也验证过），所以最多损失 400 步（耗时以实际的 s/step 为准）。日志接着写在原来的 `train_log.jsonl` 里，checkpoint 编号也接着排。
 - 不用 `new_machine.sh` 的话：`RESUME_FROM=<run dir>/resume.pth ASSETS=... bash scripts/train_sw_lmmd.sh <config>`。
 
 **9. 还机器之前，先把结果拷走**：checkpoint、`train_log.jsonl`、各个 `eval_*/summary.json`，以及 `<root>/sw_lmmd/logs/`。一个 checkpoint 15.5 GB，一般只拷最好的一两个，加上所有的 summary 和日志。推荐经过 HF 私有 repo 中转，上传和之后在 4090 上下载都快。这一步要一个 **Write** token，用完可以在 HF 网站上删掉：
@@ -303,12 +314,55 @@ cat $RUN/eval_summary.md
   - `force`：训练用的 MMD force
   - `raw_mmd2`：监控用的窗口 MMD²
   - `grad_norm`：梯度范数
+  - `lr`：这一步生成器实际用的学习率（有调度时每步不同）
   - `cache_max_age`：缓存特征最老的年龄（步）
   - `seconds`：这一步用时
   - `drift_mean`、`drift_age_*`：缓存漂移，每 10 步测一次
   - `refreshed_rows`：每 20 个窗口整体刷新一次缓存时出现
 - checkpoint：`step_XXXXXXX.pth`，内容是 `{"model", "step", "schedule", "world_size"}`，只含 fp32 权重，每个 15.5 GB。4090 每 250 步存一次（共 8 个），H100 每 200 步一次（共 10 个）。
-- **断点续训**：H100 配置每 100 步把完整状态（权重、8-bit AdamW、窗口位置、缓存，约 23 GB）覆盖写入 `<run dir>/resume.pth`。中断后用 `bash scripts/new_machine.sh --root <root> --resume` 接着跑（见 3.3 第 8 步），结果和没中断时逐位一致。日志里每次写入会打一行 `resume state (step N) -> ... in N s`。4090 配置没有开这个功能（`save_resume: false`）。
+- **断点续训**：H100 配置每 400 步把完整状态（权重、8-bit AdamW、窗口位置、缓存，约 23 GB）覆盖写入 `<run dir>/resume.pth`。中断后用 `bash scripts/new_machine.sh --root <root> --resume` 接着跑（见 3.3 第 8 步），结果和没中断时逐位一致。日志里每次写入会打一行 `resume state (step N) -> ... in N s`。4090 配置没有开这个功能（`save_resume: false`）。
+
+### 3.6 加 GAN 判别器（可选）
+
+实现在 `rdm/sw_lmmd/adversarial.py`，配置在 `gan:` 块，默认关闭。原理和实测数据见 README 的 "Optional: an adversarial term" 一节和 `docs/method_notes.md`。
+
+**判别器怎么接进来的：**
+
+- 判别器只看 MMD 已经算好的池化特征：每个编码器一个小 MLP 头，用 τ(c) 做 projection 条件。它在 GradCache 的中间阶段运行，不增加任何 4B rollout，也不增加编码器前向。
+- 每一步的顺序：pass 1 得到 fake 特征 → 判别器在当前窗口上更新一步（real 是参考库里窗口这些行，fake 是生成侧同样这些行，两边 prompt 一一对应；H100 配置的窗口是 128 行）→ 生成器的 loss = MMD force + λ · 对抗项（用更新后的判别器打分，判别器参数冻结）→ pass 2 反传到生成器。
+- λ 是自适应的：在特征空间里，对抗梯度的范数 = `weight` × MMD 梯度的范数。实测原始比例约 2000 : 1，所以不能直接手调一个固定的 λ。
+
+**怎么跑（2 × H100）：**
+
+```bash
+GPUS=2 bash scripts/train_sw_lmmd.sh configs/sw_lmmd_train_h100_2gpu_gan.yaml
+```
+
+- 这个配置和 `sw_lmmd_train_h100_2gpu.yaml` 只差两处：`gan.enabled: true`，以及 `memory.battery_bf16: false`。
+- 改 `battery_bf16` 的原因：参考库的特征是用 fp32 权重的编码器提的。训练时如果用 bf16 权重，同一批图的两种特征就能被线性分类器分开（53–56%，用 fp32 权重是 50%），判别器会去学这个管线差异，而不是图像内容。代价是每卡多约 5.6 GB，估计约 72 GB/卡。OOM 的话照旧用 `--micro-batch 4`。
+- 输出目录是 `sw-lmmd-flux-h100-2gpu-gan`，不会和不加 GAN 的那次训练混在一起。
+- `weight` 先用 0.25，还没有调过；值得扫 0.1 / 0.25 / 0.5 / 1。可以用 `--set gan.weight=0.5` 改。
+
+**4090：** 可以直接在 `sw_lmmd_train_4x4090.yaml` 上打开 GAN，但**一定要同时改 `exp_name`**，否则会写进已有的 `sw-lmmd-flux-4x4090` 目录，和原来那次训练的日志、checkpoint 混在一起：
+
+```bash
+conda activate rdm && source /data/thor/jiacheng/rdm-sets/env.sh
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 -m rdm.sw_lmmd.launch \
+    configs/sw_lmmd_train_4x4090.yaml --set gan.enabled=true --set exp_name=sw-lmmd-flux-4x4090-gan
+```
+
+（`train_sw_lmmd.sh` 只认固定的几个环境变量，不能透传 `--set`，所以这里直接用 torchrun。）
+
+这台机器的显存只够 `battery_bf16: true`，所以启动时会警告上面说的管线差异。正式的 GAN 实验建议放到 H100 上跑。
+
+**日志里看什么**（`train_log.jsonl`；屏幕上每步多一段 `D acc ... | lambda ...`）：
+
+- `gan/d_acc`：判别器在当前窗口上的准确率。前 50 步（`g_start_step`）判别器单独练，生成器照常训练但只用 MMD，这段时间日志里的 `lambda` 显示 `off`。
+- `gan/lambda`、`gan/grad_ratio`：自适应权重是否正常时，`gan/grad_ratio` 应该等于 `weight`。
+- `force` 仍然只是 MMD force；`loss_total` 是实际反传的总 loss。
+- 如果 `d_acc` 长期贴近 1.0、`gan/d_fake` 持续往下掉，说明判别器太强、生成器跟不上。可以调低 `gan.lr`，或者打开 `gan.r1_gamma: 1.0`。
+
+**评测：** 判别器和 MMD 的梯度方向几乎正交，`raw_mmd2` 基本反映不出它的作用。所以要用 `eval_run.sh`，在同一台机器上和不加 GAN 的那次训练逐个 checkpoint 比 GenEval / PickScore。step checkpoint 里不含判别器，评测流程不变；判别器只存在 `resume.pth` 里，断点续训时会一起恢复。
 
 ## 4. 评测
 
@@ -451,7 +505,7 @@ CUDA_VISIBLE_DEVICES="" python -m pytest tests -q     # 只用 CPU，约 1 分�
 ## 6. 注意事项
 
 - **磁盘**：`/`（包括 `/home`）只剩约 37 GB（2026-09-29）。checkpoint 和参考库都要放在 `/data/thor`，新配置已经这么设置了。
-- **卡数必须整除 128**：可以是 1/2/4/8/16/32。
+- **卡数必须整除 B**（4090 配置 128，H100 配置 32）：1/2/4/8/16/32 都可以。
 - **不要用旧配置** `sw_lmmd_h100_2gpu.yaml` 和 `sw_lmmd_debug_4x4090.yaml`：它们把参数存成 bf16，在 lr 2.83e-6 下 klein-4B 有 96% 的权重一步也不会更新。`train_sw_lmmd.sh` 头部注释里的示例还是这两个旧配置，请用 `sw_lmmd_train_*.yaml`。
 - **`env.sh`**：`HF_HOME` 必须是 hub 缓存的上一级目录（FLUX 权重只按 `HF_HOME` 查找）。换机器时记得设 `ASSETS`：启动脚本找不到 `env.sh` 时会静默跳过，要到加载模型时才报错。
 - **参考库里的 `qwen_context.npy` 是软链接**，指向 61 GB 的 `qwen3_ctx_coco.npy`。上传到 HF / Drive 的版本不含它，新机器用 `preprocess_all-new-machine.sh` 重新生成。如果要在机器之间直接拷贝完整的参考库，要用 `rsync -aL`，否则软链接会失效。

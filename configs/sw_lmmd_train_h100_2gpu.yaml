@@ -8,7 +8,11 @@
 # If that machine mounts the data elsewhere, --set reference_root=... --set output_dir=...
 # (the store's qwen_context.npy is a symlink to step 01's qwen3_ctx_coco.npy -- copy both).
 #
-# Only the machine (`memory:` and the paths) differs from the method in sw_lmmd_flux.yaml.
+# Differs from the method in sw_lmmd_flux.yaml in the machine (`memory:`, the paths) AND in the
+# window: K=128 / B=32 here, not the default K=1024 / B=128 -- 32 fresh rollouts per step, the
+# oldest cached row 3 steps old. sw_lmmd_train_4x4090.yaml keeps the default window, so the two
+# configs no longer train the same objective and their results are not directly comparable.
+# steps stays 2000, i.e. 64k fresh samples (the default window saw 256k in 2000 steps).
 #
 # Memory, per card (shard: none is DATA parallel -- every rank holds the full training state):
 #
@@ -26,9 +30,27 @@
 # 8-bit instead (bitsandbytes; the update is still computed in fp32 on the fp32 weights).
 #
 # The activation term is the one estimate. If the gate OOMs, --set memory.micro_batch=4
-# (grad_accum 8 -> 16): tests/test_sw_lmmd_trainer.py shows the gradient does not change.
+# (grad_accum 2 -> 4): tests/test_sw_lmmd_trainer.py shows the gradient does not change.
 extends: sw_lmmd_flux.yaml
 exp_name: sw-lmmd-flux-h100-2gpu
+
+# ---- Window: K=128 compared per step, B=32 fresh + back-propagated ----
+# `extends` merges top-level keys only, so the whole block is restated.
+window:
+  size: 128                   # K
+  stride: 32                  # B  (overlap 96, oldest context row is 3 steps old)
+  cyclic: true
+  order_seed: 3407            # the same permutation as the default window
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+active_global_batch: 32       # B; must equal window.stride
+
+# ---- lr: linear warm-up over the first 100 steps, then cosine down to 10 % of lr at `steps` ----
+lr_schedule:
+  name: cosine
+  warmup_steps: 100           # 5 % of the run; Adam's first steps are sign-like at full lr
+  min_lr_ratio: 0.1
+  total_steps: null           # = steps (2000); a --set steps=N run decays over N instead
 
 reference_root: /data/thor/jiacheng/rdm-sets/sw_lmmd/reference_store
 output_dir: /data/thor/jiacheng/rdm-sets/sw_lmmd/work_dirs
@@ -39,7 +61,7 @@ memory:
   optimizer: adamw8bit        # needs bitsandbytes (pip install bitsandbytes)
   param_dtype: fp32           # master weights -- see above
   battery_bf16: true          # the kernels upcast to fp32 anyway
-  micro_batch: 8              # -> grad_accum = 128 / (2 * 8) = 8
+  micro_batch: 8              # -> grad_accum = 32 / (2 * 8) = 2
   encoder_offload: false
 
 # Start narrow (spec sec. 14.1): verify the loop on three encoders before the full battery
@@ -53,9 +75,11 @@ probe_every: 10               # staleness probe cadence (0 = follow cache.refres
 save_cache: false             # step checkpoints stay weights-only: they are what gets evaluated
 save_optimizer: false
 # Resume: <run dir>/resume.pth (weights + 8-bit AdamW moments + schedule + cache, ~23.3 GB, ONE
-# file, rewritten in place every 100 steps and at the end). A stopped run continues from it with
+# file, rewritten in place every 400 steps and at the end). A stopped run continues from it with
 #   bash scripts/new_machine.sh --root <root> --resume       (or RESUME_FROM=... train_sw_lmmd.sh)
-# and the remaining steps are those of an uninterrupted run. Losing a run costs <= 100 steps.
-# 100, not 50: an unsharded H100 step is ~10 s (estimate), so 50 would write 23 GB every ~8 min.
+# and the remaining steps are those of an uninterrupted run. Losing a run costs <= 400 steps.
+# 400: a B=32 step rolls out a quarter of the B=128 step's images, so it should take a few
+# seconds rather than ~10 [ESTIMATE]; 400 keeps the 23 GB rewrite roughly as rare in wall time
+# as 100 was at B=128. Check the first steps' s/step.
 save_resume: true
-resume_every: 100
+resume_every: 400
