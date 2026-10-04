@@ -341,7 +341,7 @@ GPUS=2 bash scripts/train_sw_lmmd.sh configs/sw_lmmd_train_h100_2gpu_gan.yaml
 - 这个配置和 `sw_lmmd_train_h100_2gpu.yaml` 只差两处：`gan.enabled: true`，以及 `memory.battery_bf16: false`。
 - 改 `battery_bf16` 的原因：参考库的特征是用 fp32 权重的编码器提的。训练时如果用 bf16 权重，同一批图的两种特征就能被线性分类器分开（53–56%，用 fp32 权重是 50%），判别器会去学这个管线差异，而不是图像内容。代价是每卡多约 5.6 GB，估计约 72 GB/卡。OOM 的话照旧用 `--micro-batch 4`。
 - 输出目录是 `sw-lmmd-flux-h100-2gpu-gan`，不会和不加 GAN 的那次训练混在一起。
-- `weight` 先用 0.25，还没有调过；值得扫 0.1 / 0.25 / 0.5 / 1。可以用 `--set gan.weight=0.5` 改。
+- `weight` 用 1.5（GAN 梯度是 MMD 的 1.5 倍，GAN 为主），还没有调过；值得扫 1 / 1.5 / 2。可以用 `--set gan.weight=2` 改。
 
 **4090：** 可以直接在 `sw_lmmd_train_4x4090.yaml` 上打开 GAN，但**一定要同时改 `exp_name`**，否则会写进已有的 `sw-lmmd-flux-4x4090` 目录，和原来那次训练的日志、checkpoint 混在一起：
 

@@ -35,7 +35,7 @@ memory:
 gan:
   enabled: true
   encoders: null
-  weight: 0.25                # a starting point, not a tuned value -- sweep 0.1 / 0.25 / 0.5 / 1
+  weight: 1.5                 # |g_adv| = 1.5 x |g_mmd|: the critic leads, MMD anchors. Untuned -- sweep 1 / 1.5 / 2
   adaptive: true
   min_norm_ratio: 0.001
   loss: hinge
