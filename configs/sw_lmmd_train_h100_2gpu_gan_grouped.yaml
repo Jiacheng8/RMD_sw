@@ -1,0 +1,39 @@
+# SW-LMMD + GAN on 2 x H100 with PROMPT-GROUPED windows -- the mode-collapse experiment.
+#
+#   bash scripts/new_machine.sh --root <root> --config configs/sw_lmmd_train_h100_2gpu_gan_grouped.yaml \
+#        --skip-env --skip-download --skip-preprocess --skip-geneval
+#
+# Identical to sw_lmmd_train_h100_2gpu_gan.yaml except for `window.group_by_prompt: true` (and
+# micro_batch 4, the size that fit with the fp32 battery). Why: with a row-level permutation a
+# row almost never shares its window with another row of the same prompt, so each prompt is
+# one generated sample against one reference -- the same-prompt attraction has no matching
+# same-prompt repulsion and every seed is pulled toward one image (seed diversity 0.12-0.14 in
+# all three earlier runs, while the top-4 references themselves measure 0.206 on the same
+# metric). Grouped, each step's B=32 fresh rows are 8 prompts x 4 seeds, compared against those
+# prompts' 4 references; the window holds 32 whole prompts.
+#
+# New log keys (every monitored step): <encoder>/group_k_gen and <encoder>/group_k_ref -- mean
+# kernel between seeds of the same prompt, generated vs reference. gen well above ref = collapse.
+#
+# Separate exp_name so its checkpoints never mix with the ungrouped run's.
+extends: sw_lmmd_train_h100_2gpu_gan.yaml
+exp_name: sw-lmmd-flux-h100-2gpu-gan-grouped
+
+# `extends` merges top-level keys only, so both blocks are restated in full.
+window:
+  size: 128                   # K = 32 prompts x 4 rows
+  stride: 32                  # B = 8 prompts x 4 rows
+  cyclic: true
+  order_seed: 3407            # now seeds the PROMPT permutation
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+  group_by_prompt: true
+
+memory:
+  shard: none
+  grad_reduce: mean
+  optimizer: adamw8bit
+  param_dtype: fp32
+  battery_bf16: false
+  micro_batch: 4              # 8 OOMed with the fp32 battery; 4 = one prompt's seeds per chunk
+  encoder_offload: false

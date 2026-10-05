@@ -22,7 +22,7 @@ from .cache import GeneratedWindowCache
 from .config import CacheConfig, GANConfig, LRSchedule, MemoryPolicy, WindowConfig
 from .reference_store import ReferenceFeatureStore
 from .trainer import SWLMMDTrainer
-from .window_schedule import SlidingWindowSchedule
+from .window_schedule import SlidingWindowSchedule, build_grouped_row_order
 
 logger = logging.getLogger("rdm")
 
@@ -230,9 +230,17 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
     names = list(cfg.encoders)
     store = ReferenceFeatureStore(cfg.reference_root, names,
                                   require_context=getattr(cfg, "joint", True))
-    schedule = SlidingWindowSchedule(store.row_order(window.order_seed),
-                                     window_size=window.size, stride=window.stride,
-                                     cyclic=window.cyclic)
+    if window.group_by_prompt:
+        if store.prompt_ids is None:
+            raise ValueError("window.group_by_prompt needs a store with prompt_ids.npy (several "
+                             "reference rows per prompt); this store has one row per prompt")
+        row_order, group = build_grouped_row_order(store.prompt_ids, window.order_seed)
+        logger.info("[sw_lmmd] prompt-grouped window: %d rows per prompt -> %d prompts per window, "
+                    "%d fresh prompts per step", group, window.size // group, window.stride // group)
+    else:
+        row_order, group = store.row_order(window.order_seed), 1
+    schedule = SlidingWindowSchedule(row_order, window_size=window.size, stride=window.stride,
+                                     cyclic=window.cyclic, group_size=group)
     generator, model = build_generator_from_config(cfg, device, param_dtype=policy.param_dtype)
     # Shard before the battery loads: until FSDP keeps only this rank's 1/world, every rank
     # holds the whole fp32 model (15.5 GB), which leaves a 24 GB card no room for encoders.

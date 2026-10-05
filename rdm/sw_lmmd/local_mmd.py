@@ -87,6 +87,23 @@ def blockwise_mean_nograd(a: torch.Tensor, b: torch.Tensor, gamma: float,
     return acc / float(a32.shape[0] * b32.shape[0])
 
 
+@torch.no_grad()
+def within_group_kernel_mean(x: torch.Tensor, group: int, sigma: float) -> torch.Tensor:
+    """Mean ``k(x_a, x_b)`` over distinct pairs inside consecutive blocks of ``group`` rows.
+
+    With a prompt-grouped window each block is one prompt's seeds, so this is the same-prompt
+    similarity: computed on generated rows and on their references, a generated value well
+    above the reference one means the seeds of a prompt have collapsed toward one image.
+    """
+    if group < 2 or x.shape[0] % group:
+        raise ValueError(f"need >= 2 rows per group and {x.shape[0]} rows divisible by {group}")
+    blocks = at_least_fp32(x).reshape(-1, group, x.shape[-1])
+    d2 = torch.cdist(blocks, blocks).square()
+    k = torch.exp(-gamma_from_sigma(sigma) * d2)
+    off = ~torch.eye(group, dtype=torch.bool, device=x.device)
+    return k[:, off].mean()
+
+
 class ExactLocalMMD:
     """Window-local biased MMD: the training force, and the monitored value."""
 

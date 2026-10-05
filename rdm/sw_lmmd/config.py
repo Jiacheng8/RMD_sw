@@ -32,6 +32,10 @@ class WindowConfig:
     order_seed: int = 3407
     random_start_each_epoch: bool = True
     reverse_probability: float = 0.5
+    # Permute prompts, not rows, and keep each prompt's G reference rows adjacent, so every
+    # prompt is compared as G fresh samples against its G references. Off = the original
+    # row-level permutation. G is read from the store (rows per prompt); K and B must divide by it.
+    group_by_prompt: bool = False
 
     def validate(self) -> None:
         if self.size <= 0 or self.stride <= 0:

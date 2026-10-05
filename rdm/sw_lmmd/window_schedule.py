@@ -15,6 +15,16 @@ therefore a random size-``K`` subset ("local" means *this finite subset*, not *s
 close*); semantic orderings are a controlled ablation because they shrink within-window
 diversity and invite sequential forgetting.
 
+**Prompt-grouped orders** (``window.group_by_prompt``, off by default). The reference holds
+several rows per prompt (one per kept teacher seed), and a row-level permutation scatters them:
+at K=1024 over 331k rows a row meets one of its siblings in its window with probability ~0.01.
+The window then holds one generated sample and one reference per prompt, the same-prompt
+attraction is never matched by a same-prompt repulsion, and the local MMD degenerates into a
+per-prompt regression that drives every seed to one image. :func:`build_grouped_row_order`
+permutes *prompts* instead and keeps each prompt's ``G`` rows adjacent; with ``G | K``, ``G | B``
+and every offset a multiple of ``G``, each prompt enters the window as one active block of ``G``
+fresh samples against its ``G`` references, and leaves it together.
+
 Crossing an epoch boundary changes the permutation (or the cyclic offset), which destroys the
 overlap identity above: the old cache is meaningless under the new order and must be dropped
 and re-bootstrapped. :meth:`SlidingWindowSchedule.new_epoch` returns the new epoch index and
@@ -44,6 +54,27 @@ def build_row_order(num_rows: int, seed: int = 3407) -> np.ndarray:
     return np.random.default_rng(seed).permutation(int(num_rows)).astype(np.int64)
 
 
+def build_grouped_row_order(prompt_ids, seed: int = 3407) -> tuple[np.ndarray, int]:
+    """A permutation that shuffles prompts but keeps each prompt's rows adjacent.
+
+    Returns ``(order, G)``: ``order[G*j : G*(j+1)]`` are all the rows of one prompt, and the
+    prompts appear in a seeded random order. Every prompt must own exactly ``G`` rows -- a
+    ragged store cannot be tiled into windows that never split a prompt.
+    """
+    pid = np.asarray(prompt_ids, dtype=np.int64)
+    if pid.ndim != 1 or pid.size == 0:
+        raise ValueError("prompt_ids must be a non-empty 1-D array")
+    counts = np.bincount(pid)
+    counts = counts[counts > 0]
+    group = int(counts[0])
+    if not np.all(counts == group):
+        raise ValueError(f"prompt-grouped windows need the same number of rows per prompt; "
+                         f"this store has between {counts.min()} and {counts.max()}")
+    rows_by_prompt = np.argsort(pid, kind="stable").reshape(-1, group)
+    perm = np.random.default_rng(seed).permutation(rows_by_prompt.shape[0])
+    return rows_by_prompt[perm].reshape(-1).astype(np.int64), group
+
+
 def order_hash(order: np.ndarray) -> str:
     """Short digest of a row order, recorded in checkpoints so a resume cannot silently
     continue under a different permutation."""
@@ -55,7 +86,7 @@ class SlidingWindowSchedule:
 
     def __init__(self, row_order, window_size: int = 1024, stride: int = 128,
                  cyclic: bool = True, start_offset: int = 0, reverse: bool = False,
-                 epoch: int = 0):
+                 epoch: int = 0, group_size: int = 1):
         order = np.asarray(row_order, dtype=np.int64)
         if order.ndim != 1 or order.size == 0:
             raise ValueError("row_order must be a non-empty 1-D array of row ids")
@@ -65,6 +96,17 @@ class SlidingWindowSchedule:
             raise ValueError(f"stride {stride} must be <= window_size {window_size}")
         if window_size > order.size:
             raise ValueError(f"window_size {window_size} exceeds the {order.size} available rows")
+        group_size = int(group_size)
+        if group_size < 1:
+            raise ValueError(f"group_size must be >= 1, got {group_size}")
+        if group_size > 1:
+            bad = {name: v for name, v in (("window_size", window_size), ("stride", stride),
+                                           ("num_rows", order.size),
+                                           ("start_offset", start_offset)) if v % group_size}
+            if bad:
+                raise ValueError(f"prompt-grouped windows need every size and offset to be a "
+                                 f"multiple of the group size {group_size}; not: {bad}")
+        self.group_size = group_size
         self._base_order = order
         self.window_size = int(window_size)
         self.stride = int(stride)
@@ -130,9 +172,11 @@ class SlidingWindowSchedule:
         """
         self.epoch += 1
         rng = np.random.default_rng(self.epoch if seed is None else seed)
-        if seed is not None:
-            self._base_order = rng.permutation(self._base_order)
-        offset = int(rng.integers(self.order.size)) if random_start else 0
+        g = self.group_size
+        if seed is not None:              # permute whole prompt groups, never split one
+            groups = self._base_order.reshape(-1, g)
+            self._base_order = groups[rng.permutation(groups.shape[0])].reshape(-1)
+        offset = g * int(rng.integers(self.order.size // g)) if random_start else 0
         reverse = bool(rng.random() < reverse_probability)
         self._configure(offset, reverse)
         return self.epoch
@@ -143,7 +187,8 @@ class SlidingWindowSchedule:
         # recorded separately, so the digest identifies the permutation alone.
         return {"step": self.step, "start_offset": self.start_offset, "reverse": self.reverse,
                 "epoch": self.epoch, "order_hash": order_hash(self._base_order),
-                "window_size": self.window_size, "stride": self.stride}
+                "window_size": self.window_size, "stride": self.stride,
+                "group_size": self.group_size}
 
     def load_state_dict(self, state: dict, strict: bool = True) -> None:
         if strict and state.get("order_hash") not in (None, order_hash(self._base_order)):
@@ -152,6 +197,11 @@ class SlidingWindowSchedule:
             raise RuntimeError("row order hash mismatch on resume: this checkpoint was written "
                                "under a different permutation. Rebuild row_order with the "
                                "recorded seed, or resume with strict=False and re-bootstrap.")
+        saved_group = int(state.get("group_size", 1))
+        if strict and saved_group != self.group_size:
+            raise RuntimeError(f"window grouping mismatch on resume: the checkpoint was written "
+                               f"with group_size={saved_group}, this config has "
+                               f"{self.group_size}. Resume with the run's own config.")
         saved = (int(state.get("window_size", self.window_size)),
                  int(state.get("stride", self.stride)))
         if strict and saved != (self.window_size, self.stride):

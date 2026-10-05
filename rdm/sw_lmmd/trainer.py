@@ -53,7 +53,7 @@ from ..train.grad_caching import gradcache_backward
 from ..utils.distributed import get_world_size
 from .cache import GeneratedWindowCache
 from .config import CacheConfig
-from .local_mmd import ExactLocalMMD
+from .local_mmd import ExactLocalMMD, within_group_kernel_mean
 from .sharding import all_gather_detached, all_reduce_mean_, partition_rows, reduce_scalar, row_noise
 
 logger = logging.getLogger(__name__)
@@ -272,6 +272,13 @@ class SWLMMDTrainer:
                     m = self.mmd.monitor(context, reference, self.sigmas[name])
                     logs.update(m.as_log(prefix=f"{name}/"))
                     raws.append(float(m.mmd2))
+                    group = getattr(self.schedule, "group_size", 1)
+                    if group > 1:             # same-prompt similarity of this step's prompts
+                        k_gen = within_group_kernel_mean(glob, group, self.sigmas[name])
+                        k_ref = within_group_kernel_mean(reference[-glob.shape[0]:], group,
+                                                         self.sigmas[name])
+                        logs[f"{name}/group_k_gen"] = float(k_gen)
+                        logs[f"{name}/group_k_ref"] = float(k_ref)
                 if self.critic is not None and name in self.critic.names:
                     window_feats[name] = (context, reference)
                 del reference, context
