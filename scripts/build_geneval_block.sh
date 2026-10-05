@@ -4,11 +4,11 @@
 # store is read, never modified; training picks the block up with `reference_extension:`.
 #
 #   GPU_IDS=0,4,5 bash scripts/build_geneval_block.sh --geneval-root <scorer root>
-#   GPU_IDS=5 LIMIT=4 SEEDS=8 BLOCK_DIR=/tmp/gb RENDER_DIR=/tmp/gr bash scripts/build_geneval_block.sh ...  # smoke test
+#   GPU_IDS=5 LIMIT=4 GENEVAL_SEEDS=8 BLOCK_DIR=/tmp/gb RENDER_DIR=/tmp/gr bash scripts/build_geneval_block.sh ...  # smoke test
 #
 # Stages (each resumable; re-running skips finished work):
 #   G1 ctx      Qwen3 context of the 553 prompts (build_flux2_ctx.py)            1 GPU, ~1 min
-#   G2 render   SEEDS teacher renders per prompt, one shard per GPU                553*SEEDS images
+#   G2 render   GENEVAL_SEEDS teacher renders per prompt, one shard per GPU        553*GENEVAL_SEEDS images
 #   G3 score    the official GenEval scorer on each shard, in parallel
 #   G4 block    keep the correct renders (whole groups of 4, <= MAX_PER_PROMPT per prompt),
 #               extract the encoder features, write $BLOCK_DIR and read it back with the store
@@ -33,7 +33,9 @@ done
   echo "--geneval-root must be the scorer root (with geneval_env.sh); see scripts/setup_geneval.sh" >&2; exit 2; }
 
 GPU_IDS="${GPU_IDS:-0}"
-SEEDS="${SEEDS:-128}"                   # candidates per prompt; the teacher is right ~80% of the time
+# NOT "SEEDS": preprocess_config.sh (sourced above) already exports SEEDS=24 for the COCO render,
+# which would silently win over a default here.
+GENEVAL_SEEDS="${GENEVAL_SEEDS:-128}"   # candidates per prompt; the teacher is right ~80% of the time
 MAX_PER_PROMPT="${MAX_PER_PROMPT:-96}"  # kept per prompt (multiple of 4)
 LIMIT="${LIMIT:-0}"                     # >0: only the first N prompts (smoke test)
 PROMPTS="${PROMPTS:-$RDM_REPO/assets/geneval_prompts.jsonl}"
@@ -73,13 +75,13 @@ if [[ -f "$GE_CTX" && "$(ctx_ok "$GE_CTX")" == ok ]]; then info "present and com
   mv "$GE_CTX.partial_meta.json" "${GE_CTX%.npy}_meta.json"
 fi
 
-say "G2  teacher renders: ${SEEDS} per prompt on GPU(s) $GPU_IDS -> $RENDER_DIR"
+say "G2  teacher renders: ${GENEVAL_SEEDS} per prompt on GPU(s) $GPU_IDS -> $RENDER_DIR"
 mkdir -p "$RENDER_DIR" "$LOG_DIR"
 pids=()
 for r in "${!GPUS[@]}"; do
   CUDA_VISIBLE_DEVICES="${GPUS[$r]}" "${PY_RUN[@]}" scripts/_geneval_render.py \
       --ctx "$GE_CTX" --prompts "$PROMPTS" --out "$RENDER_DIR" --rank "$r" --world "$WORLD" \
-      --seeds "$SEEDS" --steps "$RENDER_STEPS" --batch "$RENDER_BATCH" --img-size "$IMG_SIZE" \
+      --seeds "$GENEVAL_SEEDS" --steps "$RENDER_STEPS" --batch "$RENDER_BATCH" --img-size "$IMG_SIZE" \
       --limit "$LIMIT" > "$LOG_DIR/geneval_render_$r.log" 2>&1 &
   pids+=($!)
   info "rank $r on GPU ${GPUS[$r]} (log: $LOG_DIR/geneval_render_$r.log)"

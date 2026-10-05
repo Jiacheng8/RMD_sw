@@ -253,7 +253,7 @@ fi
 # ---------------------------------------------------------------------------
 # 4  build the block
 # ---------------------------------------------------------------------------
-BUILD_ENV=(ASSETS="$ROOT" RDM_REPO="$REPO" CONDA_ENV="$ENV_NAME" GPU_IDS="$GPU_IDS" SEEDS="$SEEDS"
+BUILD_ENV=(ASSETS="$ROOT" RDM_REPO="$REPO" CONDA_ENV="$ENV_NAME" GPU_IDS="$GPU_IDS" GENEVAL_SEEDS="$SEEDS"
            MAX_PER_PROMPT="$MAX_PER_PROMPT" LIMIT="$LIMIT" BLOCK_ENCODERS="$ENCODERS"
            RENDER_DIR="$RENDER_DIR" BLOCK_DIR="$BLOCK_DIR")
 BUILD=(bash "$REPO/scripts/build_geneval_block.sh" --geneval-root "$GENEVAL_ROOT")
