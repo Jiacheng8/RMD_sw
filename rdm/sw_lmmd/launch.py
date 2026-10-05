@@ -14,6 +14,7 @@ functions above it are pure and are covered by ``tests/test_sw_lmmd_core.py``.
 from __future__ import annotations
 
 import logging
+import os
 
 import torch
 
@@ -213,6 +214,24 @@ def build_optimizer(params, cfg, policy: MemoryPolicy):
         f"use 'adamw' or 'adamw8bit'")
 
 
+def resolve_reference_extension(cfg) -> str | None:
+    """``reference_extension:`` -> an absolute block path, or None.
+
+    A relative path is taken next to the store (relative to ``reference_root``'s parent), so a
+    config naming ``geneval_block`` finds ``<root>/sw_lmmd/geneval_block`` on any machine whose
+    store sits at ``<root>/sw_lmmd/reference_store`` -- the layout new_machine.sh creates.
+    """
+    ext = getattr(cfg, "reference_extension", None)
+    if not ext:
+        return None
+    if not os.path.isabs(ext):
+        ext = os.path.join(os.path.dirname(os.path.abspath(cfg.reference_root)), ext)
+    if not os.path.isfile(os.path.join(ext, "metadata.json")):
+        raise FileNotFoundError(f"reference_extension {ext} has no metadata.json -- build it with "
+                                f"scripts/build_geneval_block.sh, or copy it next to the store")
+    return ext
+
+
 def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
     """Assemble the full SW-LMMD trainer from a parsed config (needs weights + a built store)."""
     from ..representation.battery import Battery
@@ -228,15 +247,20 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
                 batching["max_cache_age"])
 
     names = list(cfg.encoders)
+    extension = resolve_reference_extension(cfg)
     store = ReferenceFeatureStore(cfg.reference_root, names,
-                                  require_context=getattr(cfg, "joint", True))
+                                  require_context=getattr(cfg, "joint", True), extension=extension)
+    if store.extension is not None:
+        logger.info("[sw_lmmd] reference extension %s: %d rows appended (%s), %.1f%% of %d",
+                    store.extension["root"], store.extension["rows"], store.extension["kind"],
+                    100.0 * store.extension["rows"] / store.num_rows, store.num_rows)
     if window.group_by_prompt:
         if store.prompt_ids is None:
             raise ValueError("window.group_by_prompt needs a store with prompt_ids.npy (several "
                              "reference rows per prompt); this store has one row per prompt")
-        row_order, group = build_grouped_row_order(store.prompt_ids, window.order_seed)
-        logger.info("[sw_lmmd] prompt-grouped window: %d rows per prompt -> %d prompts per window, "
-                    "%d fresh prompts per step", group, window.size // group, window.stride // group)
+        row_order, group = build_grouped_row_order(store.grouping_ids(), window.order_seed)
+        logger.info("[sw_lmmd] prompt-grouped window: %d rows per group -> %d groups per window, "
+                    "%d fresh groups per step", group, window.size // group, window.stride // group)
     else:
         row_order, group = store.row_order(window.order_seed), 1
     schedule = SlidingWindowSchedule(row_order, window_size=window.size, stride=window.stride,

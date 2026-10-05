@@ -40,36 +40,26 @@ import numpy as np
 import torch
 
 
-class _ShardedRows:
-    """Read-only row-addressable view over a list of memory-mapped shards.
+class _ConcatRows:
+    """Read-only row-addressable view over a list of row arrays, concatenated along axis 0.
 
-    A single 61 GB ``.npy`` is legal but awkward to build, copy and checksum; the context pool
-    is therefore allowed to be a directory of shards with a manifest. Fancy indexing returns
-    rows in the order requested, exactly like indexing one array.
+    Fancy indexing returns rows in the order requested, exactly like indexing one array. Used
+    for a sharded context pool and for a store read together with its extension block.
     """
 
-    def __init__(self, manifest_path: str):
-        root = Path(manifest_path).parent
-        manifest = json.loads(Path(manifest_path).read_text())
-        self.parts, self.starts = [], []
-        cursor = 0
-        for entry in manifest["shards"]:
-            arr = np.load(root / entry["path"], mmap_mode="r")
-            if "rows" in entry and int(entry["rows"]) != arr.shape[0]:
-                raise ValueError(f"shard {entry['path']}: manifest says {entry['rows']} rows, "
-                                 f"array has {arr.shape[0]}")
-            self.parts.append(arr)
-            self.starts.append(cursor)
-            cursor += arr.shape[0]
-        if not self.parts:
-            raise ValueError(f"{manifest_path}: no shards listed")
-        self.starts = np.asarray(self.starts, dtype=np.int64)
-        self._num_rows = cursor
-        self.shape = (cursor, *self.parts[0].shape[1:])
+    def __init__(self, parts):
+        if not parts:
+            raise ValueError("no row arrays to concatenate")
+        for p in parts[1:]:
+            if p.shape[1:] != parts[0].shape[1:]:
+                raise ValueError(f"row arrays disagree on the trailing shape: "
+                                 f"{parts[0].shape[1:]} vs {p.shape[1:]}")
+        self.parts = list(parts)
+        sizes = [p.shape[0] for p in self.parts]
+        self.starts = np.concatenate([[0], np.cumsum(sizes)[:-1]]).astype(np.int64)
+        self._num_rows = int(sum(sizes))
+        self.shape = (self._num_rows, *self.parts[0].shape[1:])
         self.dtype = self.parts[0].dtype
-        for p in self.parts[1:]:
-            if p.shape[1:] != self.parts[0].shape[1:]:
-                raise ValueError("context shards disagree on the trailing shape")
 
     def __len__(self) -> int:
         return self._num_rows
@@ -78,11 +68,32 @@ class _ShardedRows:
         ids = np.asarray(row_ids, dtype=np.int64).reshape(-1)
         which = np.searchsorted(self.starts, ids, side="right") - 1
         out = np.empty((ids.size, *self.shape[1:]), dtype=self.dtype)
-        for shard_idx in np.unique(which):
-            sel = which == shard_idx
-            local = ids[sel] - self.starts[shard_idx]
-            out[sel] = self.parts[shard_idx][local]
+        for part_idx in np.unique(which):
+            sel = which == part_idx
+            out[sel] = self.parts[part_idx][ids[sel] - self.starts[part_idx]]
         return out
+
+
+class _ShardedRows(_ConcatRows):
+    """Read-only row-addressable view over a list of memory-mapped shards.
+
+    A single 61 GB ``.npy`` is legal but awkward to build, copy and checksum; the context pool
+    is therefore allowed to be a directory of shards with a manifest.
+    """
+
+    def __init__(self, manifest_path: str):
+        root = Path(manifest_path).parent
+        manifest = json.loads(Path(manifest_path).read_text())
+        parts = []
+        for entry in manifest["shards"]:
+            arr = np.load(root / entry["path"], mmap_mode="r")
+            if "rows" in entry and int(entry["rows"]) != arr.shape[0]:
+                raise ValueError(f"shard {entry['path']}: manifest says {entry['rows']} rows, "
+                                 f"array has {arr.shape[0]}")
+            parts.append(arr)
+        if not parts:
+            raise ValueError(f"{manifest_path}: no shards listed")
+        super().__init__(parts)
 
 
 def _open_rows(root: Path, stem: str):
@@ -99,7 +110,8 @@ def _open_rows(root: Path, stem: str):
 class ReferenceFeatureStore:
     """Memory-mapped, row-addressed access to one SW-LMMD reference directory."""
 
-    def __init__(self, root: str, encoder_names, require_context: bool = True):
+    def __init__(self, root: str, encoder_names, require_context: bool = True,
+                 extension: str | None = None):
         self.root = Path(root)
         self.encoder_names = list(encoder_names)
         self.metadata = json.loads((self.root / "metadata.json").read_text())
@@ -127,7 +139,59 @@ class ReferenceFeatureStore:
 
         pid = self.root / "prompt_ids.npy"
         self.prompt_ids = np.load(pid).astype(np.int64) if pid.exists() else None
+        gid = self.root / "group_ids.npy"
+        self._group_ids = np.load(gid).astype(np.int64) if gid.exists() else None
+        self.extension = None
+        if extension is not None:
+            self._attach_extension(Path(extension))
         self._validate()
+
+    # ---------------------------------------------------------------- extension block
+    def _attach_extension(self, ext: Path) -> None:
+        """Append an extension block's rows (e.g. the GenEval block) behind this store's rows.
+
+        The block carries its own prompt-indexed tables (text, context) and row-indexed image
+        features; its prompt ids are shifted past this store's prompts and its group ids past
+        this store's groups, so every existing row id keeps its meaning and the block's rows
+        are ``num_rows .. num_rows + block_rows - 1``. Bandwidths stay this store's: the block
+        is compared under the same fixed kernel as every other reference row.
+        """
+        meta = json.loads((ext / "metadata.json").read_text())
+        n_base_rows, n_base_prompts = self.num_rows, len(self.text)
+        ext_text = np.load(ext / "text_features.npy", mmap_mode="r")
+        ext_pid = np.load(ext / "prompt_ids.npy").astype(np.int64)
+        ext_gid = np.load(ext / "group_ids.npy").astype(np.int64)
+        n_ext = int(meta["num_rows"])
+        if ext_pid.shape[0] != n_ext or ext_gid.shape[0] != n_ext:
+            raise ValueError(f"{ext}: prompt/group ids do not have {n_ext} rows")
+        if ext_pid.size and int(ext_pid.max()) >= len(ext_text):
+            raise ValueError(f"{ext}: prompt_ids index past its {len(ext_text)}-row text table")
+
+        base_pid = self.prompt_rows(np.arange(n_base_rows))
+        base_gid = self.grouping_ids()
+        self.prompt_ids = np.concatenate([base_pid, ext_pid + n_base_prompts])
+        self._group_ids = np.concatenate([base_gid, ext_gid + int(base_gid.max()) + 1])
+        self.text = _ConcatRows([self.text, ext_text])
+        if self.context is not None:
+            ext_ctx = _open_rows(ext, "qwen_context")
+            if ext_ctx is None:
+                raise FileNotFoundError(f"{ext}/qwen_context.npy is required")
+            self.context = _ConcatRows([self.context, ext_ctx])
+        for name in self.encoder_names:
+            path = ext / "encoder_features" / f"{name}.npy"
+            if not path.exists():
+                raise FileNotFoundError(f"extension {ext} has no features for {name!r}")
+            self.image_features[name] = _ConcatRows(
+                [self.image_features[name], np.load(path, mmap_mode="r")])
+        self.num_rows = n_base_rows + n_ext
+        self.extension = {"root": str(ext), "rows": n_ext, "first_row": n_base_rows,
+                          "kind": meta.get("kind", "extension")}
+
+    def grouping_ids(self) -> np.ndarray:
+        """Row -> window group: ``group_ids.npy`` if present, else the prompt id (or the row)."""
+        if self._group_ids is not None:
+            return self._group_ids
+        return self.prompt_rows(np.arange(self.num_rows))
 
     # ---------------------------------------------------------------- validation
     @property
@@ -141,6 +205,9 @@ class ReferenceFeatureStore:
         return ids if self.prompt_ids is None else self.prompt_ids[ids]
 
     def _validate(self) -> None:
+        if self._group_ids is not None and self._group_ids.shape[0] != self.num_rows:
+            raise ValueError(f"group_ids has {self._group_ids.shape[0]} entries for "
+                             f"{self.num_rows} reference rows")
         if self.prompt_ids is not None:
             if self.prompt_ids.shape[0] != self.num_rows:
                 raise ValueError(f"prompt_ids has {self.prompt_ids.shape[0]} entries for "
@@ -169,7 +236,7 @@ class ReferenceFeatureStore:
     def row_order(self, seed: int | None = None) -> np.ndarray:
         """The canonical permutation, from ``row_order.npy`` or freshly built from ``seed``."""
         path = self.root / "row_order.npy"
-        if path.exists():
+        if path.exists() and self.extension is None:     # it covers the base rows only
             order = np.load(path).astype(np.int64)
             if order.size != self.num_rows or np.unique(order).size != self.num_rows:
                 raise ValueError("row_order.npy is not a full permutation of the reference rows")

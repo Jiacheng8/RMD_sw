@@ -1,0 +1,20 @@
+# SW-LMMD + GAN, prompt-grouped windows, and the GenEval reference block on 2 x H100.
+#
+#   bash scripts/new_machine.sh --root <root> --config configs/sw_lmmd_train_h100_2gpu_gan_grouped_geneval.yaml \
+#        --skip-env --skip-download --skip-preprocess --skip-geneval
+#
+# Identical to sw_lmmd_train_h100_2gpu_gan_grouped.yaml plus `reference_extension: geneval_block`:
+# the 4-step teacher's GenEval-CORRECT renders on the 553 GenEval prompts (<= 96 per prompt, in
+# groups of 4), appended behind the 331,132 COCO rows -- the recipe of the iRDM headline
+# reference ("geALLcoco", 17.8 % GenEval). Why: grouping restored seed diversity but GenEval
+# fell to the teacher's own level (0.789 vs teacher 0.797), because nothing in a COCO-only
+# reference pulls composition beyond the teacher. NOTE: these are the GenEval TEST prompts --
+# disclose it, and keep the COCO-only grouped run as the uncontaminated comparison.
+#
+# The block is built once by scripts/build_geneval_block.sh into <root>/sw_lmmd/geneval_block
+# (next to reference_store/; a relative path is resolved there) and is ~1-3 GB to copy.
+# Prompts and generator rows are drawn in proportion to the rows, so the block's share of the
+# window equals its share of the reference (logged at start-up).
+extends: sw_lmmd_train_h100_2gpu_gan_grouped.yaml
+exp_name: sw-lmmd-flux-h100-2gpu-gan-grouped-geneval
+reference_extension: geneval_block
