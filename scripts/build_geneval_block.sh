@@ -14,7 +14,10 @@
 #               extract the encoder features, write $BLOCK_DIR and read it back with the store
 #
 # Paths and the conda env come from scripts/preprocess_config.sh (ASSETS, WORK, STORE_DIR, ...).
-# The scorer root is the --root of scripts/setup_geneval.sh (it holds geneval_env.sh).
+# The scorer root is the --root of scripts/setup_geneval.sh (it holds geneval_env.sh). Neither
+# COCO nor the COCO store is needed: when $STORE_DIR exists the block is also read back as its
+# extension, otherwise it is checked on its own (e.g. on a fresh render machine,
+# scripts/reference_new_machine.sh).
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/preprocess_config.sh"
 
@@ -41,8 +44,13 @@ BLOCK_ENCODERS="${BLOCK_ENCODERS:-$ENCODERS}"
 IFS=',' read -r -a GPUS <<< "$GPU_IDS"
 WORLD=${#GPUS[@]}
 cd "$RDM_REPO"
-preflight
-[[ -f "$STORE_DIR/metadata.json" ]] || { echo "no COCO store at $STORE_DIR" >&2; exit 1; }
+command -v conda >/dev/null || { echo "conda not on PATH" >&2; exit 1; }
+[[ -n "${FLUX2_SRC:-}" && -d "${FLUX2_SRC:-}/flux2" ]] || {
+  echo "FLUX2_SRC does not point at an importable flux2 package -- source <root>/env.sh" >&2; exit 1; }
+[[ -f "$TAU_RELEASED" ]] || { echo "missing the released tau table: $TAU_RELEASED
+  (scripts/fetch_prerequisites.py --group assets)" >&2; exit 1; }
+BASE_ARGS=()
+[[ -f "$STORE_DIR/metadata.json" ]] && BASE_ARGS=(--base-store "$STORE_DIR")
 
 say "G1  Qwen3 context of the GenEval prompts -> $GE_CTX"
 # A failed build_flux2_ctx.py leaves a full-size memmap of zeros, and zero context renders junk
@@ -82,7 +90,9 @@ say "G3  GenEval scorer on every shard"
 pids=()
 for r in "${!GPUS[@]}"; do
   out="$RENDER_DIR/shard_${r}_results.jsonl"
+  [[ -d "$RENDER_DIR/shard_$r" ]] || continue              # more GPUs than (limited) prompts
   n_img=$(find "$RENDER_DIR/shard_$r" -path '*/samples/*.png' | wc -l)
+  [[ $n_img -gt 0 ]] || continue
   if [[ -f "$out" && $(wc -l < "$out") -eq $n_img ]]; then info "shard $r scored ($n_img images), skipping"; continue; fi
   CUDA_VISIBLE_DEVICES="${GPUS[$r]}" bash scripts/score_geneval.sh "$RENDER_DIR/shard_$r" \
       --root "$GENEVAL_ROOT" --out "$out" > "$LOG_DIR/geneval_score_$r.log" 2>&1 &
@@ -94,7 +104,7 @@ for p in "${pids[@]}"; do wait "$p" || { echo "a scorer failed -- see $LOG_DIR/g
 say "G4  select correct renders, extract features -> $BLOCK_DIR"
 CUDA_VISIBLE_DEVICES="${GPUS[0]}" "${PY_RUN[@]}" scripts/_geneval_block_build.py \
     --render-dir "$RENDER_DIR" --prompts "$PROMPTS" --ctx "$GE_CTX" \
-    --tau-released "$TAU_RELEASED" --base-store "$STORE_DIR" --out "$BLOCK_DIR" \
+    --tau-released "$TAU_RELEASED" "${BASE_ARGS[@]}" --out "$BLOCK_DIR" \
     --encoders "$BLOCK_ENCODERS" --max-per-prompt "$MAX_PER_PROMPT" \
     --img-size "$IMG_SIZE" --batch "$EXTRACT_BATCH" --workers "$NUM_WORKERS"
 say "done -- train with reference_extension: $(basename "$BLOCK_DIR") (it must sit next to the store)"

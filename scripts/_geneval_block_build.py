@@ -60,7 +60,9 @@ def main() -> int:
     ap.add_argument("--tau-released", required=True, help="siglip2_text_geall_g32.npy")
     ap.add_argument("--tau-offset", type=int, default=82783,
                     help="first GenEval row of the released tau table (after the COCO captions)")
-    ap.add_argument("--base-store", required=True, help="the COCO store this block extends")
+    ap.add_argument("--base-store", default=None,
+                    help="the COCO store this block extends (optional: only for the read-back "
+                         "check and the mass fraction; a fresh render machine has none)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--encoders", required=True)
     ap.add_argument("--group", type=int, default=4)
@@ -76,7 +78,8 @@ def main() -> int:
 
     names = [e.strip() for e in args.encoders.split(",") if e.strip()]
     meta = [json.loads(line) for line in open(args.prompts) if line.strip()]
-    base_meta = json.load(open(os.path.join(args.base_store, "metadata.json")))
+    base_meta = (json.load(open(os.path.join(args.base_store, "metadata.json")))
+                 if args.base_store else None)
     if args.max_per_prompt % args.group:
         raise SystemExit(f"--max-per-prompt {args.max_per_prompt} must be a multiple of "
                          f"--group {args.group}")
@@ -113,9 +116,11 @@ def main() -> int:
     if replica.shape[0] == len(meta) and not np.allclose(block_tau, replica):
         raise SystemExit(f"released tau rows {args.tau_offset}.. are not the GenEval prompts "
                          f"(the x32 replication does not repeat) -- check --tau-offset")
-    base_tau = np.load(os.path.join(args.base_store, "text_features.npy"), mmap_mode="r")
-    if base_tau.shape[1] != block_tau.shape[1]:
-        raise SystemExit(f"tau width {block_tau.shape[1]} != the COCO store's {base_tau.shape[1]}")
+    if args.base_store:
+        base_tau = np.load(os.path.join(args.base_store, "text_features.npy"), mmap_mode="r")
+        if base_tau.shape[1] != block_tau.shape[1]:
+            raise SystemExit(f"tau width {block_tau.shape[1]} != the COCO store's "
+                             f"{base_tau.shape[1]}")
     np.save(os.path.join(args.out, "text_features.npy"), block_tau.astype(np.float32))
     ctx = np.load(args.ctx, mmap_mode="r")
     if ctx.shape[0] != len(meta):
@@ -139,27 +144,34 @@ def main() -> int:
         del feats
         torch.cuda.empty_cache()
 
+    base_rows = int(base_meta["num_rows"]) if base_meta else None
     json.dump({"kind": "geneval_block", "num_rows": n_rows, "num_prompts": len(meta),
                "group_size": args.group, "max_per_prompt": args.max_per_prompt,
                "prompts_covered": covered, "rows_per_task": dict(per_tag),
                "encoder_feature_dims": dims, "feature_dtype": "float16",
-               "text_dim": int(block_tau.shape[1]),
-               "base_store_rows": int(base_meta["num_rows"]),
-               "mass_fraction": n_rows / (n_rows + int(base_meta["num_rows"])),
+               "text_dim": int(block_tau.shape[1]), "base_store_rows": base_rows,
+               "mass_fraction": n_rows / (n_rows + base_rows) if base_rows else None,
                "tau_source": os.path.abspath(args.tau_released), "tau_offset": args.tau_offset,
                "render_dir": os.path.abspath(args.render_dir)},
               open(os.path.join(args.out, "metadata.json"), "w"), indent=2)
 
-    # ---- read it back through the real reader, as an extension of the COCO store ----
-    from rdm.sw_lmmd import ReferenceFeatureStore
-    store = ReferenceFeatureStore(args.base_store, names, extension=args.out)
-    tail = np.arange(store.num_rows - 8, store.num_rows)
-    for name in names:
-        store.reference_joint_features(name, tail)
-    store.generator_context(tail[:2])
+    # ---- read it back: through the real reader as the store's extension, or on its own ----
+    if args.base_store:
+        from rdm.sw_lmmd import ReferenceFeatureStore
+        store = ReferenceFeatureStore(args.base_store, names, extension=args.out,
+                                      require_context=False)
+        tail = np.arange(store.num_rows - 8, store.num_rows)
+        for name in names:
+            store.reference_joint_features(name, tail)
+        share = f", {n_rows / (n_rows + base_rows):.1%} of the combined reference"
+    else:
+        for name in names:
+            f = np.load(os.path.join(args.out, "encoder_features", f"{name}.npy"), mmap_mode="r")
+            assert f.shape == (n_rows, dims[name]) and np.isfinite(f[:64]).all(), name
+        assert np.load(os.path.join(args.out, "qwen_context.npy"), mmap_mode="r").shape[0] == len(meta)
+        share = ""
     print(f"[geneval block] OK  {args.out}")
-    print(f"        {n_rows:,} rows over {covered}/{len(meta)} prompts, "
-          f"{n_rows / (n_rows + int(base_meta['num_rows'])):.1%} of the combined reference")
+    print(f"        {n_rows:,} rows over {covered}/{len(meta)} prompts{share}")
     print(f"        per task: {dict(per_tag)}")
     return 0
 
