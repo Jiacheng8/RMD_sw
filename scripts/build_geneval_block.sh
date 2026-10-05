@@ -32,6 +32,13 @@ done
 [[ -n "$GENEVAL_ROOT" && -f "$GENEVAL_ROOT/geneval_env.sh" ]] || {
   echo "--geneval-root must be the scorer root (with geneval_env.sh); see scripts/setup_geneval.sh" >&2; exit 2; }
 
+# Background jobs of a non-interactive script ignore SIGINT, so a Ctrl-C would stop this script
+# and leave the render/score workers running on the GPUs. Take them down with it.
+pids=()
+kill_tree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done; kill "$1" 2>/dev/null || true; }
+stop_workers() { local p; for p in "${pids[@]}"; do kill_tree "$p"; done; }
+trap 'echo "interrupted: stopping the workers" >&2; stop_workers; exit 130' INT TERM HUP
+
 GPU_IDS="${GPU_IDS:-0}"
 # NOT "SEEDS": preprocess_config.sh (sourced above) already exports SEEDS=24 for the COCO render,
 # which would silently win over a default here.
