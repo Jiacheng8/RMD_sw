@@ -19,6 +19,12 @@
 #                                                mmcv is source-built on H100); a failure here only
 #                                                warns -- training still starts
 #   5 train       train_sw_lmmd.sh               SW-LMMD, configs/sw_lmmd_train_h100_2gpu.yaml
+#
+# A config with `reference_extension: <name>` (e.g. ..._gan_grouped_geneval.yaml: COCO + the GenEval
+# block) trains on the store PLUS that block. Stage 2 then also downloads the block from its private
+# HF dataset (EXT_HF, default jiachengcui888/sw-rdm-geneval-block) into <root>/sw_lmmd/<name> and
+# reads it back with the store; preflight checks the token can read it, and training refuses to
+# start without it.
 # After training, evaluate a checkpoint with
 #   CUDA_VISIBLE_DEVICES=0 bash scripts/eval_checkpoint.sh <run dir>/step_NNNNNNN.pth --root <root>
 #
@@ -118,6 +124,23 @@ say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 warn() { printf '    \033[33mWARNING:\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+# `reference_extension:` of the config, following its `extends:` chain like rdm.train.launch.load_config
+# (child keys win). Plain YAML scalars only -- enough for this key, and it works before stage 1.
+cfg_get() {   # cfg_get <config> <key>
+  local f="$1" key="$2" v parent
+  [[ -f "$f" ]] || return 0
+  v=$(grep -E "^$key:" "$f" | head -1 | sed -E "s/^$key:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^['\"]//; s/['\"]$//")
+  if [[ -n "$v" ]]; then echo "$v"; return 0; fi
+  parent=$(grep -E '^extends:' "$f" | head -1 | sed -E "s/^extends:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^['\"]//; s/['\"]$//")
+  [[ -n "$parent" ]] && cfg_get "$(dirname "$f")/$parent" "$key"
+  return 0
+}
+EXT_NAME="$(cfg_get "$CONFIG" reference_extension)"
+EXT_DIR=""
+EXT_HF="${EXT_HF-jiachengcui888/sw-rdm-geneval-block}"
+if [[ -n "$EXT_NAME" ]]; then
+  [[ "$EXT_NAME" == /* ]] && EXT_DIR="$EXT_NAME" || EXT_DIR="$SW_DIR/$EXT_NAME"   # next to the store
+fi
 # nvidia-smi can fail transiently (e.g. while another process initialises a GPU): retry first.
 smi() { local i out; for i in 1 2 3; do out=$(nvidia-smi "$@" 2>/dev/null) && { printf '%s\n' "$out"; return 0; }; sleep 3; done; return 1; }
 
@@ -248,6 +271,25 @@ if [[ $DO_DOWNLOAD -eq 1 && ! -f "$STORE/metadata.json" && -z "${SW_STORE_TAR:-}
   token reads your own private repos), or set up the rclone fallback (rclone config, remote gdrive)."
   fi
 fi
+if [[ -n "$EXT_DIR" ]]; then
+  info "reference   store + extension '$EXT_NAME' -> $EXT_DIR"
+  if [[ -f "$EXT_DIR/metadata.json" ]]; then
+    info "extension   present"
+  elif [[ $DO_DOWNLOAD -eq 1 && "$EXT_NAME" != /* ]]; then
+    CODE=$([[ -n "$TOKEN" ]] && hf_http "https://huggingface.co/api/datasets/$EXT_HF" || echo "no token")
+    if [[ "$CODE" == 200 ]]; then
+      info "extension   HF dataset $EXT_HF (readable) -> stage 2 downloads $EXT_NAME/"
+    else
+      MSG="the config trains on the extension '$EXT_NAME', but HF dataset $EXT_HF is not readable
+  with this token (account ${WHO:-?}: ${CODE:-?}). Use a token of the account that owns it (it is
+  private), or set EXT_HF=<user>/<dataset>, or copy the block to $EXT_DIR yourself."
+      if [[ $DRY -eq 1 || -z "$TOKEN" ]]; then warn "$MSG"; else die "$MSG"; fi
+    fi
+  elif [[ $DO_TRAIN -eq 1 && $DRY -eq 0 ]]; then
+    die "the config trains on the extension '$EXT_NAME', but $EXT_DIR does not exist and downloads are
+  skipped. Fetch it:  hf download $EXT_HF --repo-type dataset --include \"$EXT_NAME/*\" --local-dir $SW_DIR"
+  fi
+fi
 if [[ $DRY -eq 0 ]]; then
   [[ $DO_PREPROCESS -eq 1 && "$N_GPU" -lt 1 ]] && die "stage 3 needs 1 GPU; none visible"
   [[ $DO_TRAIN -eq 1 && "$N_GPU" -lt "$GPUS" ]] && die "training asks for $GPUS GPUs but $N_GPU are visible"
@@ -305,6 +347,39 @@ if [[ $DO_DOWNLOAD -eq 1 ]]; then
       fi
     fi
   fi
+  # The reference extension (e.g. the GenEval block): its own private HF dataset, next to the store.
+  if [[ -n "$EXT_DIR" && "$EXT_NAME" != /* ]]; then
+    if [[ $DRY -eq 1 ]]; then
+      info "would fetch $EXT_NAME/ from HF dataset $EXT_HF into $SW_DIR (skipped if present)"
+    else
+      say "stage 2/5: reference extension '$EXT_NAME' <- HF dataset $EXT_HF"
+      # snapshot_download skips what is already complete and verifies every LFS file's sha256
+      conda run -n "$ENV_NAME" --no-capture-output python - "$EXT_HF" "$EXT_NAME" "$SW_DIR" <<'PY' \
+        || die "could not download the extension from $EXT_HF (see above); re-run with --skip-env"
+import sys
+from huggingface_hub import snapshot_download
+repo, name, dest = sys.argv[1:]
+snapshot_download(repo, repo_type="dataset", allow_patterns=[f"{name}/*"], local_dir=dest)
+PY
+      [[ -f "$EXT_DIR/metadata.json" ]] || die "$EXT_HF holds no $EXT_NAME/metadata.json"
+      # read it back WITH the store, for the config's encoders (the context comes in stage 3)
+      ( source "$ROOT/env.sh" && conda run -n "$ENV_NAME" --no-capture-output python - "$CONFIG" "$STORE" "$EXT_DIR" <<'PY' ) \
+        || die "the extension $EXT_DIR does not read back with the store (see above)"
+import sys
+import numpy as np
+from rdm.sw_lmmd import ReferenceFeatureStore
+from rdm.train.launch import load_config
+cfg, store, ext = sys.argv[1:]
+names = list(load_config(cfg).encoders)
+s = ReferenceFeatureStore(store, names, extension=ext, require_context=False)
+rows = np.arange(s.extension["first_row"], s.num_rows, 997)
+for n in names:
+    assert np.isfinite(s.reference_joint_features(n, rows).numpy()).all(), n
+print(f"    ok  {ext}: {s.extension['rows']:,} rows behind the store's {s.extension['first_row']:,} "
+      f"({100 * s.extension['rows'] / s.num_rows:.1f}% of {s.num_rows:,}), encoders {', '.join(names)}")
+PY
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -351,6 +426,11 @@ if [[ $DO_TRAIN -eq 1 ]]; then
     info "would run: env ${TRAIN_ENV[*]}$([[ $RESUME -eq 1 ]] && echo ' RESUME_FROM=<run dir>/resume.pth') ${TRAIN_CMD[*]}"
   else
     [[ -f "$STORE/qwen_context.npy" ]] || die "$STORE has no qwen_context.npy -- stage 3 has not completed"
+    if [[ -n "$EXT_DIR" ]]; then
+      [[ -f "$EXT_DIR/metadata.json" ]] || die "the config trains on the extension '$EXT_NAME' but $EXT_DIR is missing.
+  Fetch it:  hf download $EXT_HF --repo-type dataset --include \"$EXT_NAME/*\" --local-dir $SW_DIR"
+      info "reference   $STORE + $EXT_DIR"
+    fi
     CFGVALS=$(conda run -n "$ENV_NAME" --no-capture-output python -c \
       "from rdm.train.launch import load_config; c = load_config('$CONFIG'); print(c.exp_name, c.steps, c.save_freq, int(bool(getattr(c, 'save_resume', False))))" \
       | sed '/^[[:space:]]*$/d' | tail -1) || die "could not load $CONFIG (see the error above)"
