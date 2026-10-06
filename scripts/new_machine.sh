@@ -49,6 +49,9 @@
 #          --output-dir DIR  --env NAME (rdm)  --hf-cache DIR  --full-download
 #          --skip-env  --skip-download  --skip-preprocess  --skip-geneval  --no-train  --dry-run
 #          --resume  (continue the run in --output-dir from its resume.pth; skips stages 1-4)
+#          --eval  (after training: GenEval + PickScore on every step_*.pth over all visible GPUs,
+#                   scripts/eval_run.sh -> <run dir>/eval_summary.md; with --no-train it evaluates
+#                   the existing run)  --eval-baselines  (also the 4-step teacher and released s180)
 #          --allow-low-disk  (train even if the checkpoints will not all fit; you prune them)
 #          --allow-hf-drift  (continue although a model file on the Hub changed since assets/hf_revisions.json)
 set -euo pipefail
@@ -78,6 +81,8 @@ DO_ENV=1; DO_DOWNLOAD=1; DO_PREPROCESS=1; DO_GENEVAL=1; DO_TRAIN=1
 RESUME=0
 ALLOW_LOW_DISK=0
 ALLOW_HF_DRIFT=0
+DO_EVAL=0
+EVAL_BASELINES=0
 DRY=0
 
 while [[ $# -gt 0 ]]; do
@@ -100,6 +105,8 @@ while [[ $# -gt 0 ]]; do
     --resume)          RESUME=1; shift ;;
     --allow-low-disk)  ALLOW_LOW_DISK=1; shift ;;
     --allow-hf-drift)  ALLOW_HF_DRIFT=1; shift ;;
+    --eval)            DO_EVAL=1; shift ;;
+    --eval-baselines)  DO_EVAL=1; EVAL_BASELINES=1; shift ;;
     --dry-run)         DRY=1; shift ;;
     -h|--help)         sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -480,9 +487,58 @@ $(pgrep -u "$(id -u)" -af "$TRAIN_PAT" | cut -c1-160)
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# 6  evaluation (--eval): every checkpoint of the run, all visible GPUs, one table
+# ---------------------------------------------------------------------------
+if [[ $DO_EVAL -eq 1 ]]; then
+  say "stage 6/6: evaluation (GenEval + PickScore)"
+  if [[ -z "${RUN_DIR:-}" ]]; then                 # --no-train: evaluate the run already on disk
+    if [[ $DRY -eq 1 ]]; then
+      RUN_DIR="$OUTPUT_DIR/<exp_name of $CONFIG>"
+    else
+      EXP=$(conda run -n "$ENV_NAME" --no-capture-output python -c \
+        "from rdm.train.launch import load_config; print(load_config('$CONFIG').exp_name)" \
+        | sed '/^[[:space:]]*$/d' | tail -1) || die "could not load $CONFIG"
+      RUN_DIR="$OUTPUT_DIR/$EXP"
+    fi
+  fi
+  if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then EVAL_GPUS="$CUDA_VISIBLE_DEVICES"
+  else EVAL_GPUS=$(smi --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | paste -sd, -); fi
+  # one evaluation peaks at ~21 GB: two per card from 48 GB up (eval_run.sh --per-gpu)
+  EVAL_PER_GPU=1; [[ "${MIN_MIB:-0}" -ge 48000 ]] && EVAL_PER_GPU=2
+  EVAL=(bash "$REPO/scripts/eval_run.sh" "$RUN_DIR" --root "$ROOT" --env "$ENV_NAME"
+        --gpus "$EVAL_GPUS" --per-gpu "$EVAL_PER_GPU")
+  [[ $EVAL_BASELINES -eq 1 ]] && EVAL+=(--baselines)
+  EVAL_GROOT="${GENEVAL_ROOT:-$ROOT/geneval}"       # stage 4 installs it at <root>/geneval
+  if [[ -f "$EVAL_GROOT/geneval_env.sh" ]]; then
+    EVAL+=(--geneval-root "$EVAL_GROOT")
+  else
+    warn "no GenEval scorer env at $EVAL_GROOT (stage 4 skipped or failed): PickScore only"
+    EVAL+=(--no-geneval)
+  fi
+  if [[ $DRY -eq 1 ]]; then
+    info "would run: env ASSETS=$ROOT CONDA_ENV=$ENV_NAME ${EVAL[*]}"
+  else
+    N_CKPT=0
+    [[ -d "$RUN_DIR" ]] && N_CKPT=$(find "$RUN_DIR" -maxdepth 1 -name 'step_*.pth' | wc -l)
+    if [[ $N_CKPT -eq 0 && $EVAL_BASELINES -eq 0 ]]; then
+      warn "no step_*.pth in $RUN_DIR to evaluate$([[ $GATE -eq 1 ]] && echo ' (a --gate run saves none)')"
+    else
+      info "$N_CKPT checkpoint(s)$([[ $EVAL_BASELINES -eq 1 ]] && echo ' + teacher + s180') on GPU(s) $EVAL_GPUS, $EVAL_PER_GPU per card"
+      # an evaluation failure must not hide that training finished: warn, the command retries it
+      if env ASSETS="$ROOT" CONDA_ENV="$ENV_NAME" "${EVAL[@]}"; then
+        info "table: $RUN_DIR/eval_summary.md"
+      else
+        warn "some evaluations failed (see above); re-run to retry only those:"
+        warn "  bash scripts/new_machine.sh --root $ROOT --config $CONFIG --skip-env --skip-download --skip-preprocess --skip-geneval --output-dir $OUTPUT_DIR --no-train --eval$([[ $EVAL_BASELINES -eq 1 ]] && echo -baselines)"
+      fi
+    fi
+  fi
+fi
+
 if [[ $DRY -eq 1 ]]; then
   say "dry run: nothing was changed"
-elif [[ $DO_TRAIN -eq 0 ]]; then
+elif [[ $DO_TRAIN -eq 0 && $DO_EVAL -eq 0 ]]; then
   say "ready -- to train:"
   info "env ${TRAIN_ENV[*]} ${TRAIN_CMD[*]}"
 fi
