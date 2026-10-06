@@ -11,8 +11,11 @@
 # reference pulls composition beyond the teacher. NOTE: these are the GenEval TEST prompts --
 # disclose it, and keep the COCO-only grouped run as the uncontaminated comparison.
 #
-# The block is built once by scripts/build_geneval_block.sh into <root>/sw_lmmd/geneval_block
-# (next to reference_store/; a relative path is resolved there) and is ~1-3 GB to copy.
+# The block (45,156 rows, 1.5 GB) is on the PRIVATE HF dataset jiachengcui888/sw-rdm-geneval-block;
+# put it next to reference_store/ (a relative path is resolved there):
+#   hf download jiachengcui888/sw-rdm-geneval-block --repo-type dataset \
+#       --include "geneval_block/*" --local-dir <root>/sw_lmmd
+# or rebuild it with scripts/build_geneval_block.sh (scripts/reference_new_machine.sh on a fresh box).
 # Prompts and generator rows are drawn in proportion to the rows, so the block's share of the
 # window equals its share of the reference (logged at start-up).
 extends: sw_lmmd_train_h100_2gpu_gan_grouped.yaml
