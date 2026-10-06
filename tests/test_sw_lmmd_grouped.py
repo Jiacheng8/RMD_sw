@@ -186,3 +186,27 @@ def test_grouped_config_differs_from_the_gan_run_only_in_grouping_and_micro_batc
         assert getattr(cfg, key) == getattr(base, key), key
     assert cfg.exp_name != base.exp_name
     assert resolve_batching(cfg, policy, w, world_size=2)["grad_accum"] == 4
+
+
+def test_k1024_config_differs_from_the_k128_geneval_run_only_in_the_window():
+    import dataclasses
+
+    from rdm.sw_lmmd.launch import (gan_from_config, memory_from_config, resolve_batching,
+                                    window_from_config)
+    from rdm.train.launch import load_config
+
+    base = load_config("configs/sw_lmmd_train_h100_2gpu_gan_grouped_geneval.yaml")
+    cfg = load_config("configs/sw_lmmd_train_h100_gan_grouped_geneval_k1024b128.yaml")
+    w = window_from_config(cfg)
+    assert (w.size, w.stride, w.group_by_prompt, w.group_pattern) == (1024, 128, True, "G")
+    assert dataclasses.replace(w, size=128, stride=32) == window_from_config(base)
+    assert cfg.active_global_batch == 128
+    assert memory_from_config(cfg) == memory_from_config(base)
+    assert gan_from_config(cfg) == gan_from_config(base)
+    for key in ("encoders", "lr", "lr_schedule", "steps", "save_freq", "joint", "loss", "cache",
+                "reference_extension", "grad_clip"):
+        assert getattr(cfg, key) == getattr(base, key), key
+    assert cfg.exp_name != base.exp_name
+    policy = memory_from_config(cfg)
+    assert {n: resolve_batching(cfg, policy, w, world_size=n)["grad_accum"]
+            for n in (2, 4, 8)} == {2: 16, 4: 8, 8: 4}
