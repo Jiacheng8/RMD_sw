@@ -273,7 +273,9 @@ class SWLMMDTrainer:
                     logs.update(m.as_log(prefix=f"{name}/"))
                     raws.append(float(m.mmd2))
                     group = getattr(self.schedule, "group_size", 1)
-                    if group > 1:             # same-prompt similarity of this step's prompts
+                    if group > 1 and getattr(window, "active_grouped", True):
+                        # same-prompt similarity of this step's prompts (grouped steps only:
+                        # an ungrouped block has no siblings to compare)
                         k_gen = within_group_kernel_mean(glob, group, self.sigmas[name])
                         k_ref = within_group_kernel_mean(reference[-glob.shape[0]:], group,
                                                          self.sigmas[name])
@@ -316,6 +318,8 @@ class SWLMMDTrainer:
                "cache_max_age": self.cache.max_age(window.step),
                "active_rows": int(window.active_ids.size),
                "active_rows_per_rank": int(local_active.size), **logs}
+        if getattr(self.schedule, "group_pattern", None):           # mixed schedule
+            out["grouped_step"] = int(window.active_grouped)
         if self.critic is not None:
             out["loss_total"] = reduce_scalar(loss_val)     # force + lambda * adversarial
         self._last_logs = out

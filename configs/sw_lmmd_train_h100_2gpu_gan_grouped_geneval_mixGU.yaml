@@ -1,0 +1,29 @@
+# SW-LMMD + GAN + the GenEval reference block, with grouped and ungrouped steps ALTERNATING.
+#
+#   bash scripts/new_machine.sh --root <root> --config configs/sw_lmmd_train_h100_2gpu_gan_grouped_geneval_mixGU.yaml --eval
+#
+# Identical to sw_lmmd_train_h100_2gpu_gan_grouped_geneval.yaml except `window.group_pattern: GU`.
+# Grouped steps (G) match each prompt's seed distribution: diverse (DreamSim 0.97-1.08x the
+# teacher) but GenEval stays near the reference's own level (0.789 COCO-only, 0.802 with the
+# GenEval block). Ungrouped steps (U) regress each sample onto one reference: GenEval 0.835 but
+# collapsed (0.73x). Alternating them averages the two forces -- roughly 0.8x the grouped
+# same-prompt repulsion -- so the model lands on ONE sharper-than-reference distribution between
+# the two; the pattern is the knob ("GUU" sharpens further). Expect diversity and GenEval
+# between those two runs; the eval table's div columns (teacher: pixel 0.1905, DreamSim 0.2314)
+# show where it landed. The log gains `grouped_step` (1/0); group_k_* is logged on G steps only.
+#
+# Each epoch the groups are split between the two kinds (half here); a G step trains B/4 = 8
+# whole prompts x 4 seeds, a U step 32 rows of 32 other prompts.
+extends: sw_lmmd_train_h100_2gpu_gan_grouped_geneval.yaml
+exp_name: sw-lmmd-flux-h100-2gpu-gan-grouped-geneval-mixGU
+
+# `extends` merges top-level keys only, so the whole block is restated.
+window:
+  size: 128                   # K (a multiple of B: each step's active block is one segment)
+  stride: 32                  # B
+  cyclic: true
+  order_seed: 3407
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+  group_by_prompt: true
+  group_pattern: GU           # G = grouped step, U = ungrouped step, repeating

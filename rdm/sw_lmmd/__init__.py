@@ -24,14 +24,17 @@ from .reference_store import ReferenceFeatureStore, write_reference_store
 from .refresh import probe_drift, refresh_retained, should_refresh
 from .sharding import all_gather_detached, partition_rows, row_noise, row_seed
 from .trainer import SWLMMDTrainer
-from .window_schedule import (SlidingWindowSchedule, WindowBatch, build_grouped_row_order,
-                              build_row_order, order_hash)
+from .window_schedule import (MixedGroupSchedule, SlidingWindowSchedule, WindowBatch,
+                              build_grouped_row_order, build_mixed_row_order, build_row_order,
+                              order_hash)
 
 __all__ = [
     "AdversarialCritic", "CacheConfig", "EncoderCacheEntry", "ExactLocalMMD", "FeatureCritic",
     "GANConfig", "GeneratedWindowCache", "KernelConfig", "MMDMonitor", "MemoryPolicy",
+    "MixedGroupSchedule",
     "ReferenceFeatureStore", "SWLMMDTrainer", "SlidingWindowSchedule", "WindowBatch",
     "WindowConfig", "all_gather_detached", "build_critic", "build_grouped_row_order",
+    "build_mixed_row_order",
     "build_row_order", "order_hash",
     "partition_rows", "probe_drift", "refresh_retained", "row_noise", "row_seed",
     "should_refresh", "write_reference_store",

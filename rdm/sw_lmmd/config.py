@@ -36,12 +36,26 @@ class WindowConfig:
     # prompt is compared as G fresh samples against its G references. Off = the original
     # row-level permutation. G is read from the store (rows per prompt); K and B must divide by it.
     group_by_prompt: bool = False
+    # With group_by_prompt: which steps are grouped, as a repeating pattern of G (grouped) and U
+    # (ungrouped: the prompt's rows scattered, one sample vs its paired reference). "G" = every
+    # step grouped (the plain grouped schedule); "GU" alternates; "GUU" groups one step in three.
+    # Fewer G steps weaken the same-prompt repulsion: sharper, more often correct, less diverse.
+    group_pattern: str = "G"
 
     def validate(self) -> None:
         if self.size <= 0 or self.stride <= 0:
             raise ValueError("window size and stride must be positive")
         if self.stride > self.size:
             raise ValueError(f"stride {self.stride} cannot exceed window size {self.size}")
+        pattern = str(self.group_pattern).upper()
+        if not pattern or set(pattern) - {"G", "U"}:
+            raise ValueError(f"window.group_pattern must be a string of G/U, got {self.group_pattern!r}")
+        if pattern != "G" and not self.group_by_prompt:
+            raise ValueError(f"window.group_pattern {self.group_pattern!r} needs "
+                             f"window.group_by_prompt: true")
+        if pattern != "G" and self.size % self.stride:
+            raise ValueError(f"window.group_pattern {self.group_pattern!r} needs the window "
+                             f"size {self.size} to be a multiple of the stride {self.stride}")
 
     @property
     def overlap(self) -> int:

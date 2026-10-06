@@ -25,6 +25,17 @@ permutes *prompts* instead and keeps each prompt's ``G`` rows adjacent; with ``G
 and every offset a multiple of ``G``, each prompt enters the window as one active block of ``G``
 fresh samples against its ``G`` references, and leaves it together.
 
+**Mixed schedules** (``window.group_pattern``, e.g. ``"GU"``). Grouped and ungrouped steps pull in
+opposite directions: grouped windows match each prompt's seed *distribution* (diverse, but no
+better than the reference), ungrouped ones regress each sample onto one reference (sharper, more
+often correct, collapsed). :class:`MixedGroupSchedule` alternates them step by step following a
+repeating pattern -- ``"GU"`` one grouped step then one ungrouped, ``"GUU"`` one in three
+grouped. Averaged over steps this weakens the same-prompt repulsion relative to the attraction
+(roughly 0.8x for ``"GU"``, ~0.55x for ``"GUU"``, in units of the grouped force), i.e. it targets a
+sharpened version of the reference: a knob between faithful diversity and collapse. One network
+sees no flag telling the two step types apart, so it converges to one compromise distribution,
+not to two behaviours.
+
 Crossing an epoch boundary changes the permutation (or the cyclic offset), which destroys the
 overlap identity above: the old cache is meaningless under the new order and must be dropped
 and re-bootstrapped. :meth:`SlidingWindowSchedule.new_epoch` returns the new epoch index and
@@ -47,6 +58,8 @@ class WindowBatch:
     active_ids: np.ndarray
     step: int
     epoch: int
+    # True when the active block is whole prompt groups (G seeds of each prompt together)
+    active_grouped: bool = False
 
 
 def build_row_order(num_rows: int, seed: int = 3407) -> np.ndarray:
@@ -73,6 +86,101 @@ def build_grouped_row_order(prompt_ids, seed: int = 3407) -> tuple[np.ndarray, i
     rows_by_prompt = np.argsort(pid, kind="stable").reshape(-1, group)
     perm = np.random.default_rng(seed).permutation(rows_by_prompt.shape[0])
     return rows_by_prompt[perm].reshape(-1).astype(np.int64), group
+
+
+def _equal_groups(grouping_ids) -> np.ndarray:
+    """``(n_groups, G)`` row ids, one group per row of the result (equal-sized groups only)."""
+    gid = np.asarray(grouping_ids, dtype=np.int64)
+    if gid.ndim != 1 or gid.size == 0:
+        raise ValueError("grouping ids must be a non-empty 1-D array")
+    counts = np.bincount(gid)
+    counts = counts[counts > 0]
+    group = int(counts[0])
+    if not np.all(counts == group):
+        raise ValueError(f"grouped windows need the same number of rows per group; this store "
+                         f"has between {counts.min()} and {counts.max()}")
+    return np.argsort(gid, kind="stable").reshape(-1, group)
+
+
+def _scatter_rows(groups: np.ndarray, separation: int, rng) -> np.ndarray:
+    """Rows of ``groups`` ``(n, G)`` in a sequence where two rows of one group are always at least
+    ``separation`` positions apart (cyclically).
+
+    Column ``k`` of the sequence holds one row of EVERY group, groups in a fresh random order, so
+    a group's rows sit about ``n`` apart. Which of a group's rows goes to which column is drawn
+    per group -- otherwise the first column (the part a short run sees) would hold only rank-0
+    references. Near a column boundary a group could still end one column and start the next;
+    those heads are swapped with rows from the column's middle.
+    """
+    n, g = groups.shape
+    sep = int(separation)
+    if g > 1 and n < sep:
+        raise ValueError(f"{n} scattered groups are too few to keep a group's rows {sep} apart")
+    rows = groups[np.arange(n)[:, None], np.argsort(rng.random((n, g)), axis=1)]
+    if n >= 3 * sep:                                   # independent columns, boundaries repaired
+        cols = [rng.permutation(n) for _ in range(g)]
+        for k in list(range(1, g)) + [0]:              # column 0 last: it follows column g-1
+            tail = set(cols[k - 1][n - sep:].tolist())
+            cur = cols[k]
+            free = [j for j in range(sep, n - sep) if cur[j] not in tail]
+            for i in range(sep):
+                if cur[i] in tail:
+                    j = free.pop()
+                    cur[i], cur[j] = cur[j], cur[i]
+    else:                                              # small pool: one order for every column,
+        perm = rng.permutation(n)                      # so a group's rows sit exactly n apart
+        cols = [perm] * g
+    return np.concatenate([rows[cols[k], k] for k in range(g)])
+
+
+def build_mixed_row_order(grouping_ids, pattern: str, segment: int, seed: int = 3407,
+                          separation: int | None = None,
+                          phase: int = 0) -> tuple[np.ndarray, int, np.ndarray]:
+    """A row order made of ``segment``-row blocks, grouped or scattered as ``pattern`` repeats.
+
+    Returns ``(order, G, segment_grouped)``. Block ``i`` covers ``order[i*segment:(i+1)*segment]``;
+    ``segment_grouped[i]`` is ``pattern[(i + phase) % len(pattern)] == "G"``. A grouped block is
+    ``segment // G`` whole groups (G rows of one prompt each, adjacent); a scattered block is
+    ``segment`` rows of OTHER groups, and two rows of one scattered group are at least
+    ``separation`` (default ``segment``; the schedule passes its window size) positions apart in
+    the scattered sequence -- hence never in one block, nor in one window. (A prompt that owns
+    several groups -- a GenEval-block prompt has up to 24 -- can still meet itself through two
+    different groups; that adds a little same-prompt repulsion, nothing else.) The groups are split between the two kinds
+    in proportion to the pattern; each row is used at most once. The block count is a multiple of
+    ``len(pattern)`` so the pattern also holds across the cyclic wrap; the few rows that do not
+    fill whole blocks (fewer than ``len(pattern) * segment``) sit out this epoch.
+    """
+    pattern = str(pattern).upper()
+    if not pattern or set(pattern) - {"G", "U"}:
+        raise ValueError(f"group_pattern must be a non-empty string of G/U, got {pattern!r}")
+    groups = _equal_groups(grouping_ids)
+    g = groups.shape[1]
+    if segment % g:
+        raise ValueError(f"segment (the stride B={segment}) must be a multiple of the group size {g}")
+    n_seg = groups.size // segment // len(pattern) * len(pattern)
+    if n_seg == 0:
+        raise ValueError(f"{groups.size} rows do not fill one {len(pattern)}x{segment}-row cycle")
+    kinds = np.array([pattern[(i + phase) % len(pattern)] == "G" for i in range(n_seg)])
+    n_grouped = int(kinds.sum()) * segment // g             # groups spent on grouped blocks
+    n_scattered = int((~kinds).sum()) * segment // g        # groups whose rows are scattered
+
+    rng = np.random.default_rng(seed)
+    groups = groups[rng.permutation(groups.shape[0])]
+    grouped = groups[:n_grouped].reshape(-1)                # already group-contiguous
+    scattered = _scatter_rows(groups[n_grouped:n_grouped + n_scattered],
+                              segment if separation is None else separation, rng)
+
+    order = np.empty(n_seg * segment, dtype=np.int64)
+    gi = si = 0
+    for i, is_grouped in enumerate(kinds):
+        block = slice(i * segment, (i + 1) * segment)
+        if is_grouped:
+            order[block] = grouped[gi:gi + segment]
+            gi += segment
+        else:
+            order[block] = scattered[si:si + segment]
+            si += segment
+    return order, g, kinds
 
 
 def order_hash(order: np.ndarray) -> str:
@@ -142,7 +250,8 @@ class SlidingWindowSchedule:
         start = self.start_offset + step * self.stride
         ids = self.order[self._positions(start, self.window_size)]
         return WindowBatch(all_ids=ids, retained_ids=ids[:self.overlap],
-                           active_ids=ids[self.overlap:], step=step, epoch=self.epoch)
+                           active_ids=ids[self.overlap:], step=step, epoch=self.epoch,
+                           active_grouped=self.group_size > 1)
 
     # ---------------------------------------------------------------- public API
     def peek(self) -> WindowBatch:
@@ -189,8 +298,13 @@ class SlidingWindowSchedule:
                 "epoch": self.epoch, "order_hash": order_hash(self._base_order),
                 "window_size": self.window_size, "stride": self.stride,
                 "group_size": self.group_size}
+        # (MixedGroupSchedule adds "group_pattern"; a plain schedule is pattern "G" or none)
 
     def load_state_dict(self, state: dict, strict: bool = True) -> None:
+        if strict and type(self) is SlidingWindowSchedule and state.get("group_pattern", "G") != "G":
+            raise RuntimeError(f"group_pattern mismatch on resume: the checkpoint was written with "
+                               f"{state['group_pattern']!r}, this config has no mixed pattern. "
+                               f"Resume with the run's own config.")
         if strict and state.get("order_hash") not in (None, order_hash(self._base_order)):
             # Resuming under a different permutation would keep the step counter but change
             # which rows it points at -- silently training on a different schedule.
@@ -213,3 +327,73 @@ class SlidingWindowSchedule:
         self.epoch = int(state.get("epoch", 0))
         self._configure(int(state.get("start_offset", 0)), bool(state.get("reverse", False)))
         self.step = int(state["step"])
+
+
+class MixedGroupSchedule(SlidingWindowSchedule):
+    """Grouped and ungrouped steps alternating as ``group_pattern`` repeats ("GU", "GUU", ...).
+
+    The window still slides over ONE fixed order (:func:`build_mixed_row_order`), so the cache,
+    the overlap identity and resume are untouched; only the order's layout changes. With
+    ``K`` and every offset multiples of ``B``, each step's active block is exactly one segment,
+    and :attr:`WindowBatch.active_grouped` says which kind it is.
+    """
+
+    def __init__(self, grouping_ids, group_pattern: str, window_size: int = 1024,
+                 stride: int = 128, cyclic: bool = True, start_offset: int = 0,
+                 reverse: bool = False, epoch: int = 0, seed: int = 3407):
+        if window_size % stride:
+            raise ValueError(f"a mixed schedule needs the window K={window_size} to be a multiple of "
+                             f"the stride B={stride}, so each step's active block is one segment")
+        if start_offset % stride:
+            raise ValueError(f"start_offset {start_offset} must be a multiple of the stride {stride}")
+        self.group_pattern = str(group_pattern).upper()
+        self._grouping_ids = np.asarray(grouping_ids, dtype=np.int64)
+        # phase: window 0's active block is segment (K-B)/B; make it pattern[0], so "GU" starts
+        # with a grouped step
+        self._phase = -((window_size - stride) // stride)
+        order, group, kinds = build_mixed_row_order(self._grouping_ids, self.group_pattern,
+                                                    stride, seed, separation=window_size,
+                                                    phase=self._phase)
+        self._base_kinds = kinds
+        super().__init__(order, window_size=window_size, stride=stride, cyclic=cyclic,
+                         start_offset=start_offset, reverse=reverse, epoch=epoch, group_size=group)
+
+    def _configure(self, start_offset: int, reverse: bool) -> None:
+        super()._configure(start_offset, reverse)
+        # reversing the order reverses the segment sequence; each segment stays whole
+        self.kinds = self._base_kinds[::-1].copy() if self.reverse else self._base_kinds
+
+    def _window_at(self, step: int) -> WindowBatch:
+        batch = super()._window_at(step)
+        active_start = self.start_offset + step * self.stride + self.overlap
+        segment = (active_start // self.stride) % self.kinds.size
+        return WindowBatch(all_ids=batch.all_ids, retained_ids=batch.retained_ids,
+                           active_ids=batch.active_ids, step=batch.step, epoch=batch.epoch,
+                           active_grouped=bool(self.kinds[segment]))
+
+    def new_epoch(self, seed: int | None = None, random_start: bool = True,
+                  reverse_probability: float = 0.5) -> int:
+        """Re-split the groups between the two kinds (with ``seed``) and/or re-anchor on a
+        segment boundary. **Invalidates the generated cache.**"""
+        self.epoch += 1
+        rng = np.random.default_rng(self.epoch if seed is None else seed)
+        if seed is not None:
+            order, _, kinds = build_mixed_row_order(self._grouping_ids, self.group_pattern,
+                                                    self.stride, int(rng.integers(2**31)),
+                                                    separation=self.window_size, phase=self._phase)
+            self._base_order, self._base_kinds = order, kinds
+        offset = self.stride * int(rng.integers(self._base_kinds.size)) if random_start else 0
+        reverse = bool(rng.random() < reverse_probability)
+        self._configure(offset, reverse)
+        return self.epoch
+
+    def state_dict(self) -> dict:
+        return {**super().state_dict(), "group_pattern": self.group_pattern}
+
+    def load_state_dict(self, state: dict, strict: bool = True) -> None:
+        saved = state.get("group_pattern", "G")
+        if strict and saved != self.group_pattern:
+            raise RuntimeError(f"group_pattern mismatch on resume: the checkpoint was written with "
+                               f"{saved!r}, this config has {self.group_pattern!r}. Resume with the "
+                               f"run's own config.")
+        super().load_state_dict(state, strict=strict)
