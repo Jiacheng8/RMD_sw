@@ -10,7 +10,9 @@
 #              at ctx_len 48 (the training geometry) -> <out>/geneval/, and the 499 Pick-a-Pic
 #              prompts at ctx_len 232 (the paper's PickScore-pa protocol) -> PickScore
 #   2 geneval  scripts/score_geneval.sh in the geneval env (scripts/setup_geneval.sh)
-#   -> <out>/summary.json   {geneval: {overall, 6 tasks}, pickscore, checkpoint, steps}
+#   3 seed diversity  scripts/seed_diversity.py on the same 4-per-prompt GenEval images: how
+#              different one prompt's images are (pixel; 1-cos of DreamSim and DINOv3), mode collapse
+#   -> <out>/summary.json   {geneval: {overall, 6 tasks}, pickscore, seed_diversity, checkpoint, steps}
 #
 # --root       the data root new_machine.sh / download_all.sh used (holds env.sh); default $ASSETS
 #              or /data/thor/jiacheng/rdm-sets
@@ -175,7 +177,7 @@ if [[ $DRY -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-say "1/2 render + PickScore"
+say "1/3 render + PickScore"
 GJSONL="$OUT/geneval_results.jsonl"
 n_images() { find "$OUT/geneval" -mindepth 3 -maxdepth 3 -path '*/samples/*.png' 2>/dev/null | wc -l; }
 if [[ $FORCE -eq 0 && "$PRIOR" == same && $(n_images) -eq $N_GENEVAL ]]; then
@@ -183,7 +185,8 @@ if [[ $FORCE -eq 0 && "$PRIOR" == same && $(n_images) -eq $N_GENEVAL ]]; then
   RENDERED=0
 else
   mkdir -p "$OUT"
-  rm -f "$OUT/flux_eval.json" "$GJSONL" "$GJSONL.summary.json" "$OUT/summary.json"   # stale results
+  rm -f "$OUT/flux_eval.json" "$GJSONL" "$GJSONL.summary.json" "$OUT/summary.json" \
+        "$OUT/seed_diversity.json"                                                   # stale results
   printf '%s\n' "$CONFIG" > "$OUT/eval_config.yaml"
   t0=$SECONDS
   # expandable_segments: less fragmentation next to a 15.5 GB fp32 model; numerics unchanged.
@@ -201,7 +204,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-say "2/2 GenEval"
+say "2/3 GenEval"
 if [[ $GENEVAL -eq 0 ]]; then
   info "skipped (--no-geneval)"
 elif [[ $FORCE -eq 0 && $RENDERED -eq 0 && -f "$GJSONL.summary.json" ]]; then
@@ -216,6 +219,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "3/3 seed diversity (the 4 images of each GenEval prompt)"
+DIV="$OUT/seed_diversity.json"
+if [[ $FORCE -eq 0 && $RENDERED -eq 0 && -f "$DIV" ]]; then
+  info "done before ($DIV); skipping"
+else
+  # never fails the evaluation: a missing encoder is skipped inside, anything else only warns
+  ( cd "$REPO" && source "$ROOT/env.sh" \
+      && "${CRUN[@]}" python scripts/seed_diversity.py "$OUT/geneval" --out "$DIV" ) 2>&1 \
+    | grep -v "it/s]" | tee "$OUT/seed_diversity.log" \
+    || warn "seed diversity failed -- see $OUT/seed_diversity.log"
+fi
+
+# ---------------------------------------------------------------------------
 say "summary"
 "${CRUN[@]}" python - "$OUT" "$LABEL" <<'PY'
 import json, os, sys
@@ -223,8 +239,10 @@ out, label = sys.argv[1], sys.argv[2]
 ev = json.load(open(os.path.join(out, "flux_eval.json")))
 gpath = os.path.join(out, "geneval_results.jsonl.summary.json")
 gen = json.load(open(gpath)) if os.path.exists(gpath) else None
+dpath = os.path.join(out, "seed_diversity.json")
+div = json.load(open(dpath)) if os.path.exists(dpath) else None
 summary = {"checkpoint": label, "num_sampling_steps": ev["num_sampling_steps"],
-           "geneval": gen, "pickscore": ev.get("pickscore"),
+           "geneval": gen, "pickscore": ev.get("pickscore"), "seed_diversity": div,
            "pickscore_ctx_len": ev["pickscore_ctx_len"], "geneval_ctx_len": ev["flux_ctx_len"],
            "out_dir": out}
 json.dump(summary, open(os.path.join(out, "summary.json"), "w"), indent=2)
@@ -235,5 +253,8 @@ if gen:
 else:
     print("    GenEval      -")
 print(f"    PickScore    {summary['pickscore']:.3f}   (Pick-a-Pic 499, ctx_len {summary['pickscore_ctx_len']})")
+if div:
+    parts = "  ".join(f"{k} {div[k]:.4f}" for k in ("pixel", "dreamsim", "dinov3_l") if k in div)
+    print(f"    diversity    {parts}   (teacher 4-step: pixel 0.1905, dreamsim 0.2314, dinov3_l 0.2674)")
 print(f"    -> {os.path.join(out, 'summary.json')}")
 PY

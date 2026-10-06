@@ -7,7 +7,7 @@
 #   bash scripts/eval_run.sh <run dir> --root <root> --gpus 0,1 --per-gpu 2   # 2 evaluations per 80 GB card
 #   bash scripts/eval_run.sh <run dir> --root <root> --dry-run            # print the plan
 #
-# Each job is scripts/eval_checkpoint.sh on one GPU (GenEval + PickScore, ~22 min on a 4090), queued
+# Each job is scripts/eval_checkpoint.sh on one GPU (GenEval + PickScore + seed diversity, ~25 min on a 4090), queued
 # so every GPU slot always has work. Results stay in the run dir -- eval_step_NNNNNNN/,
 # eval_teacher_4step/, eval_s180_release/ -- and the table goes to <run dir>/eval_summary.{md,json}.
 # A failed job does not stop the others; it is listed at the end with its log. A re-run picks up
@@ -208,20 +208,28 @@ for name in jobs:
     rows.append({"name": name, "checkpoint": (s or {}).get("checkpoint"),
                  "steps": (s or {}).get("num_sampling_steps"),
                  "geneval": g.get("overall"), **{t: g.get(t) for t in tasks},
-                 "pickscore": (s or {}).get("pickscore"), "summary": f if s else None})
+                 "pickscore": (s or {}).get("pickscore"),
+                 **{f"div_{k}": ((s or {}).get("seed_diversity") or {}).get(k)
+                    for k in ("pixel", "dreamsim", "dinov3_l")},
+                 "summary": f if s else None})
 ckpts = [r for r in rows if r["name"].startswith("step_") and r["geneval"] is not None]
 best = max(ckpts, key=lambda r: r["geneval"])["name"] if ckpts else None
 fmt = lambda v, p: "-" if v is None else f"{v:.{p}f}"
-head = "| checkpoint | GenEval | " + " | ".join(short) + " | PickScore |"
-lines = [head, "|" + "---|" * (len(short) + 3)]
+head = ("| checkpoint | GenEval | " + " | ".join(short)
+        + " | PickScore | div pixel | div DreamSim | div DINOv3 |")
+lines = [head, "|" + "---|" * (len(short) + 6)]
 for r in rows:
     mark = " **(best)**" if r["name"] == best else ""
     lines.append(f"| {r['name']}{mark} | {fmt(r['geneval'], 4)} | "
                  + " | ".join(fmt(None if r[t] is None else 100 * r[t], 1) for t in tasks)
-                 + f" | {fmt(r['pickscore'], 3)} |")
+                 + f" | {fmt(r['pickscore'], 3)} | {fmt(r['div_pixel'], 4)}"
+                 + f" | {fmt(r['div_dreamsim'], 4)} | {fmt(r['div_dinov3_l'], 4)} |")
 md = "\n".join(lines) + "\n"
 open(os.path.join(run, "eval_summary.md"), "w").write(
     "GenEval (overall = mean of the 6 task rates, tasks in %) and PickScore (Pick-a-Pic 499, ctx 232).\n"
+    "div = seed diversity: mean distance between the 4 images of one GenEval prompt (higher = less\n"
+    "mode collapse); pixel = 64 px grayscale |a-b|, DreamSim / DINOv3 = 1 - cosine. 4-step teacher:\n"
+    "pixel 0.1905, DreamSim 0.2314, DINOv3 0.2674.\n"
     "Compare only numbers measured on the same machine.\n\n" + md)
 json.dump(rows, open(os.path.join(run, "eval_summary.json"), "w"), indent=1)
 print(md)
