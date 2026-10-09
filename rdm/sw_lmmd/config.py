@@ -41,6 +41,18 @@ class WindowConfig:
     # step grouped (the plain grouped schedule); "GU" alternates; "GUU" groups one step in three.
     # Fewer G steps weaken the same-prompt repulsion: sharper, more often correct, less diverse.
     group_pattern: str = "G"
+    # With group_by_prompt: rows per group. 0 = the store's own groups (all of a prompt's rows,
+    # 4 in the COCO store); a divisor of that, e.g. 2, cuts each prompt into random sub-groups
+    # (window_schedule.split_groups): B/2 prompts per step instead of B/4, two seeds each.
+    group_size: int = 0
+    # With group_by_prompt: weigh each same-prompt (sibling) repulsion term by G/(G-1), the
+    # unbiased per-prompt estimator. The biased force's sibling repulsion is only (G-1)/G of the
+    # attraction to the prompt's references (0.75 at G=4, 0.5 at G=2). See local_mmd.
+    unbiased_siblings: bool = False
+    # With group_by_prompt: the weight w of each sibling repulsion term, so the same-prompt
+    # repulsion is w*(G-1)/G of the attraction. 1 = the plain biased force; below 1 sharpens
+    # (toward the ungrouped run), above 1 spreads. unbiased_siblings is the shorthand w = G/(G-1).
+    sibling_weight: float = 1.0
 
     def validate(self) -> None:
         if self.size <= 0 or self.stride <= 0:
@@ -56,6 +68,19 @@ class WindowConfig:
         if pattern != "G" and self.size % self.stride:
             raise ValueError(f"window.group_pattern {self.group_pattern!r} needs the window "
                              f"size {self.size} to be a multiple of the stride {self.stride}")
+        if int(self.group_size) < 0 or int(self.group_size) == 1:
+            raise ValueError(f"window.group_size must be 0 (the store's groups) or >= 2, got "
+                             f"{self.group_size}; for one row per prompt set group_by_prompt: false")
+        for key in ("group_size", "unbiased_siblings"):
+            if getattr(self, key) and not self.group_by_prompt:
+                raise ValueError(f"window.{key} needs window.group_by_prompt: true")
+        if float(self.sibling_weight) <= 0:
+            raise ValueError(f"window.sibling_weight must be positive, got {self.sibling_weight}")
+        if float(self.sibling_weight) != 1.0 and not self.group_by_prompt:
+            raise ValueError("window.sibling_weight needs window.group_by_prompt: true")
+        if float(self.sibling_weight) != 1.0 and self.unbiased_siblings:
+            raise ValueError("set window.unbiased_siblings OR window.sibling_weight, not both "
+                             "(unbiased_siblings is sibling_weight = G/(G-1))")
 
     @property
     def overlap(self) -> int:

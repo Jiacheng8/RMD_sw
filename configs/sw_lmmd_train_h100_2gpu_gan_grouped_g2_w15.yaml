@@ -1,0 +1,30 @@
+# SW-LMMD + GAN on 2 x H100, prompt-grouped windows with TWO seeds per prompt and each sibling's
+# repulsion weighted 1.5, COCO reference only, K=128 / B=32.
+#
+#   bash scripts/run_machine-new7.sh --root <root>        # env, data, train, eval in one command
+#
+# Identical to sw_lmmd_train_h100_2gpu_gan_grouped_g2.yaml (experiment 6) except
+# `window.sibling_weight: 1.5`. Why: experiment 6 changes two things at once against the K=128
+# grouped run -- twice the prompts per step (16 x 2 seeds instead of 8 x 4) AND a weaker
+# same-prompt repulsion (1/2 of the attraction instead of 3/4). Weighting the one sibling by 1.5
+# restores 3/4, so this run differs from the grouped run in the prompts per step alone:
+#
+#   same-prompt repulsion / attraction, prompts per step:
+#     grouped 0.75 x 8  ->  this run 0.75 x 16  ->  experiment 6  0.5 x 16  ->  ungrouped 0 x 32
+#
+# This run vs grouped: what more prompts per step buys at an unchanged diversity target.
+# Experiment 6 vs this run: what the sharper (weaker-repulsion) force buys, and costs.
+extends: sw_lmmd_train_h100_2gpu_gan_grouped_g2.yaml
+exp_name: sw-lmmd-flux-h100-2gpu-gan-grouped-g2-w15
+
+# `extends` merges top-level keys only, so the whole block is restated.
+window:
+  size: 128                   # K = 64 prompt pairs
+  stride: 32                  # B = 16 prompts x 2 seeds
+  cyclic: true
+  order_seed: 3407            # seeds the pair split and the pair permutation
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+  group_by_prompt: true
+  group_size: 2               # 2 of a prompt's 4 rows per group
+  sibling_weight: 1.5         # repulsion 1.5 x (2-1)/2 = 0.75 x the attraction, as at G=4

@@ -1,0 +1,29 @@
+# SW-LMMD + GAN on 2 x H100, prompt-grouped windows with TWO seeds per prompt (plain biased
+# force), COCO reference only, K=128 / B=32.
+#
+#   bash scripts/run_machine-new6.sh --root <root>        # env, data, train, eval in one command
+#
+# Identical to sw_lmmd_train_h100_2gpu_gan_grouped.yaml except `window.group_size: 2`: each
+# prompt's 4 reference rows are cut into two random pairs scheduled separately, so a step's 32
+# fresh rows are 16 prompts x 2 seeds instead of 8 x 4. Why: that run fixed the seed collapse
+# (DreamSim 1.08x the teacher, PickScore 21.82) but GenEval stayed at 0.79, while the ungrouped
+# run reached 0.83 (counting 74 vs 67, position 62 vs 57) collapsed to 0.44x. Per prompt the
+# biased force's same-prompt repulsion is (G-1)/G of the attraction: 0.75 at G=4, 0 ungrouped.
+# G=2 sits between (0.5) -- deliberately a little sharper, trading some of the diversity surplus
+# for the ungrouped run's compositional accuracy. Expect diversity and GenEval between those two
+# runs; both are directly comparable (same K, B, reference, steps).
+#
+# If it lands too collapsed, the same G=2 with `unbiased_siblings: true` restores full balance.
+extends: sw_lmmd_train_h100_2gpu_gan_grouped.yaml
+exp_name: sw-lmmd-flux-h100-2gpu-gan-grouped-g2
+
+# `extends` merges top-level keys only, so the whole block is restated.
+window:
+  size: 128                   # K = 64 prompt pairs
+  stride: 32                  # B = 16 prompts x 2 seeds
+  cyclic: true
+  order_seed: 3407            # seeds the pair split and the pair permutation
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+  group_by_prompt: true
+  group_size: 2               # 2 of a prompt's 4 rows per group; biased force (repulsion 0.5x)

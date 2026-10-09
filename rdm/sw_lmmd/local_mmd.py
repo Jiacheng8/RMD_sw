@@ -31,6 +31,24 @@ Three things this form encodes, each a documented way to get it wrong:
    negative and its magnitude is not comparable across ``K``. Plot it separately from the
    monitored ``mmd2``.
 
+**Unbiased sibling repulsion** (``window.unbiased_siblings``, off by default). The image
+kernel's small bandwidth (``sigma = 0.25 x`` the median distance) makes the same-prompt terms the
+concentrated part of the force: on the COCO store an image kernel between seeds of one prompt is
+0.12-0.29, between two random prompts ~1e-3 (the text kernel, ~0.5 between random prompts, does
+little of this). Cross-prompt attraction and repulsion come in equal numbers and cancel in
+expectation; what is left unbalanced is per prompt. In a prompt-grouped window a fresh sample
+meets its ``G`` references (attraction) and its ``G - 1`` siblings (repulsion; its own diagonal
+term has no gradient). The biased estimator weighs them equally, so the same-prompt repulsion is
+only ``(G-1)/G`` of the attraction -- 0.75 at ``G = 4``, 0.5 at ``G = 2`` -- and the optimum is a
+seed distribution narrower than the reference's. The unbiased per-prompt estimator divides the
+generated-generated sum by ``G(G-1)`` instead of ``G^2``, i.e. multiplies each sibling term by
+``G/(G-1)``, which balances the two exactly:
+
+    L_force += (2/(B*K)) * (G/(G-1) - 1) * sum_{i in A} sum_{j sibling of i} k(x_i, sg(x_j))
+
+Siblings are the other rows of ``x_i``'s block of ``G`` consecutive active rows (the grouped
+schedule keeps each prompt's rows adjacent and on one rank). Cross-prompt terms are unchanged.
+
 Distances and kernel sums run in **at least** fp32 regardless of the storage dtype -- with a
 small bandwidth a bf16 exponent underflows the whole Gram matrix to zero and the force
 silently becomes zero. fp64 inputs are left alone rather than downcast (see
@@ -104,6 +122,22 @@ def within_group_kernel_mean(x: torch.Tensor, group: int, sigma: float) -> torch
     return k[:, off].mean()
 
 
+def sibling_kernel_sum(a: torch.Tensor, group: int, gamma: float) -> torch.Tensor:
+    """``sum_i sum_{j sibling of i} k(a_i, sg(a_j))`` over consecutive blocks of ``group`` rows.
+
+    Gradient flows through the first argument only (the second is detached, as everywhere in
+    the force). Distances are explicit differences: the blocks are tiny, and unlike ``cdist``
+    the zero-distance diagonal has a well-defined (zero) gradient before it is masked out.
+    """
+    if group < 2 or a.shape[0] % group:
+        raise ValueError(f"need >= 2 rows per group and {a.shape[0]} rows divisible by {group}")
+    blocks = a.reshape(-1, group, a.shape[-1])
+    d2 = (blocks.unsqueeze(2) - blocks.detach().unsqueeze(1)).square().sum(-1)
+    k = torch.exp(-gamma * d2)
+    off = ~torch.eye(group, dtype=torch.bool, device=a.device)
+    return k[:, off].sum()
+
+
 class ExactLocalMMD:
     """Window-local biased MMD: the training force, and the monitored value."""
 
@@ -111,7 +145,8 @@ class ExactLocalMMD:
         self.block_size = int(block_size)
 
     def active_force(self, active: torch.Tensor, generated_context: torch.Tensor,
-                     reference: torch.Tensor, sigma: float) -> tuple[torch.Tensor, dict]:
+                     reference: torch.Tensor, sigma: float, group: int = 1,
+                     sibling_weight: float = 1.0) -> tuple[torch.Tensor, dict]:
         """``2 * (mean_k(active, context) - mean_k(active, reference))``.
 
         Args:
@@ -120,6 +155,10 @@ class ExactLocalMMD:
                 rank's active rows, all detached.
             reference: ``(K, d)`` reference joint features for the same rows, detached.
             sigma: the encoder's fixed RBF bandwidth.
+            group: rows per prompt group in ``active`` (consecutive blocks); used only when
+                ``sibling_weight != 1``.
+            sibling_weight: weight of each same-group repulsion term; ``G/(G-1)`` is the
+                unbiased per-prompt estimator, 1 the plain biased one.
 
         Both means divide by ``B_local * K``, which is the ``1/(BK)`` normalization; combined
         with a cross-rank gradient **mean** it telescopes to the global ``2/(BK)`` for any
@@ -142,9 +181,15 @@ class ExactLocalMMD:
                                   gamma, self.block_size)
         attract = cross_kernel_mean(a, at_least_fp32(reference).detach().to(a.dtype),
                                     gamma, self.block_size)
+        stats = {}
+        if sibling_weight != 1.0:
+            sibling = sibling_kernel_sum(a, int(group), gamma) / float(a.shape[0] *
+                                                                      generated_context.shape[0])
+            repel = repel + (float(sibling_weight) - 1.0) * sibling
+            stats["sibling_repulsion"] = sibling.detach()       # unweighted, in force units
         force = 2.0 * (repel - attract)
-        stats = {"active_repulsion": repel.detach(), "active_attraction": attract.detach(),
-                 "force": force.detach()}
+        stats.update({"active_repulsion": repel.detach(), "active_attraction": attract.detach(),
+                      "force": force.detach()})
         return force, stats
 
     @torch.no_grad()

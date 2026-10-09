@@ -69,7 +69,8 @@ class SWLMMDTrainer:
                  monitor_every: int = 1, cache_cfg: CacheConfig | None = None,
                  clip_module=None, device: str = "cuda",
                  feature_dtype: torch.dtype = torch.float32,
-                 context_dtype: torch.dtype | None = None, critic=None, lr_schedule=None):
+                 context_dtype: torch.dtype | None = None, critic=None, lr_schedule=None,
+                 unbiased_siblings: bool = False, sibling_weight: float = 1.0):
         self.generator = generator
         self.battery = battery
         self.store = store
@@ -107,6 +108,22 @@ class SWLMMDTrainer:
         if critic is not None and schedule.window_size % get_world_size():
             raise ValueError(f"window size {schedule.window_size} is not divisible by "
                              f"world_size={get_world_size()}; the critic step shards the window")
+
+        # Weighted same-prompt repulsion: each sibling term weighs G/(G-1) (unbiased_siblings, the
+        # unbiased per-prompt estimator) or sibling_weight. Siblings are found as blocks of G
+        # consecutive local active rows, so every rank's share of B must be whole groups.
+        self.unbiased_siblings = bool(unbiased_siblings)
+        self.sibling_weight = float(sibling_weight)
+        if self.unbiased_siblings and self.sibling_weight != 1.0:
+            raise ValueError("pass unbiased_siblings OR sibling_weight, not both")
+        if self.unbiased_siblings or self.sibling_weight != 1.0:
+            group = int(getattr(schedule, "group_size", 1))
+            if group < 2:
+                raise ValueError("sibling weighting (unbiased_siblings / sibling_weight) needs a "
+                                 "prompt-grouped schedule (group_size >= 2)")
+            if (schedule.stride // get_world_size()) % group:
+                raise ValueError(f"sibling weighting needs each rank's {schedule.stride} // "
+                                 f"{get_world_size()} active rows to be whole groups of {group}")
 
         # The generator's lr schedule (config.LRSchedule): a function of step_idx, applied to the
         # base lr each group was built with, so resuming it is resuming the step counter.
@@ -250,6 +267,11 @@ class SWLMMDTrainer:
 
         gathered: dict = {}
         monitor_now = self.monitor_every > 0 and (self.step_idx % self.monitor_every == 0)
+        group = getattr(self.schedule, "group_size", 1)
+        grouped_now = group > 1 and getattr(window, "active_grouped", True)
+        sibling_weight = 1.0       # an ungrouped (U) step of a mixed schedule has no siblings
+        if grouped_now:
+            sibling_weight = group / (group - 1) if self.unbiased_siblings else self.sibling_weight
 
         def loss_fn(local_feats: dict):
             total, logs, raws = None, {}, []
@@ -262,18 +284,20 @@ class SWLMMDTrainer:
                 context = torch.cat([retained.to(device=glob.device, dtype=glob.dtype), glob], 0)
                 reference = self._reference_window(name, window.all_ids)
                 force, stats = self.mmd.active_force(active, context, reference,
-                                                     self.sigmas[name])
+                                                     self.sigmas[name], group=group,
+                                                     sibling_weight=sibling_weight)
                 total = (self.encoder_weights[name] * force) if total is None else \
                     total + self.encoder_weights[name] * force
                 logs[f"{name}/force"] = float(stats["force"])
                 logs[f"{name}/repulsion"] = float(stats["active_repulsion"])
                 logs[f"{name}/attraction"] = float(stats["active_attraction"])
+                if "sibling_repulsion" in stats:
+                    logs[f"{name}/sibling_repulsion"] = float(stats["sibling_repulsion"])
                 if monitor_now:
                     m = self.mmd.monitor(context, reference, self.sigmas[name])
                     logs.update(m.as_log(prefix=f"{name}/"))
                     raws.append(float(m.mmd2))
-                    group = getattr(self.schedule, "group_size", 1)
-                    if group > 1 and getattr(window, "active_grouped", True):
+                    if grouped_now:
                         # same-prompt similarity of this step's prompts (grouped steps only:
                         # an ungrouped block has no siblings to compare)
                         k_gen = within_group_kernel_mean(glob, group, self.sigmas[name])
@@ -320,6 +344,8 @@ class SWLMMDTrainer:
                "active_rows_per_rank": int(local_active.size), **logs}
         if getattr(self.schedule, "group_pattern", None):           # mixed schedule
             out["grouped_step"] = int(window.active_grouped)
+        if self.unbiased_siblings or self.sibling_weight != 1.0:
+            out["sibling_weight"] = sibling_weight
         if self.critic is not None:
             out["loss_total"] = reduce_scalar(loss_val)     # force + lambda * adversarial
         self._last_logs = out
@@ -350,6 +376,10 @@ class SWLMMDTrainer:
                  "step": self.step_idx,
                  "schedule": self.schedule.state_dict(),
                  "world_size": get_world_size()}
+        if self.unbiased_siblings:              # absent = the plain biased force (old files)
+            state["unbiased_siblings"] = True
+        if self.sibling_weight != 1.0:
+            state["sibling_weight"] = self.sibling_weight
         if with_optimizer:
             state["optimizer"] = self.optimizer.state_dict()
         if with_cache:
@@ -372,6 +402,16 @@ class SWLMMDTrainer:
             logger.warning("[sw_lmmd] resuming a %s-rank checkpoint on %d ranks: the window and the "
                            "gradient are world-size independent, the throughput is not",
                            state.get("world_size"), get_world_size())
+        saved = bool(state.get("unbiased_siblings", False))
+        if saved != self.unbiased_siblings:
+            raise RuntimeError(f"unbiased_siblings mismatch on resume: the checkpoint was written "
+                               f"with {saved}, this config has {self.unbiased_siblings}. Resume "
+                               f"with the run's own config.")
+        saved_w = float(state.get("sibling_weight", 1.0))
+        if saved_w != self.sibling_weight:
+            raise RuntimeError(f"sibling_weight mismatch on resume: the checkpoint was written "
+                               f"with {saved_w}, this config has {self.sibling_weight}. Resume "
+                               f"with the run's own config.")
         restored = {"step": int(state["step"]), "model": False, "optimizer": False, "cache": False}
         if self.clip_module is None and state.get("model") is not None:
             self.generator.model.load_state_dict(state["model"])

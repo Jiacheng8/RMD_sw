@@ -26,7 +26,7 @@ from .sharding import all_gather_detached, partition_rows, row_noise, row_seed
 from .trainer import SWLMMDTrainer
 from .window_schedule import (MixedGroupSchedule, SlidingWindowSchedule, WindowBatch,
                               build_grouped_row_order, build_mixed_row_order, build_row_order,
-                              order_hash)
+                              order_hash, split_groups)
 
 __all__ = [
     "AdversarialCritic", "CacheConfig", "EncoderCacheEntry", "ExactLocalMMD", "FeatureCritic",
@@ -37,5 +37,5 @@ __all__ = [
     "build_mixed_row_order",
     "build_row_order", "order_hash",
     "partition_rows", "probe_drift", "refresh_retained", "row_noise", "row_seed",
-    "should_refresh", "write_reference_store",
+    "should_refresh", "split_groups", "write_reference_store",
 ]

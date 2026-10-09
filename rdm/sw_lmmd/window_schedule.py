@@ -25,6 +25,15 @@ permutes *prompts* instead and keeps each prompt's ``G`` rows adjacent; with ``G
 and every offset a multiple of ``G``, each prompt enters the window as one active block of ``G``
 fresh samples against its ``G`` references, and leaves it together.
 
+**Smaller groups** (``window.group_size``, e.g. 2 for a store with 4 rows per prompt).
+:func:`split_groups` cuts each prompt's rows into random sub-groups of that size, once per run
+(seeded by ``order_seed``); each sub-group is then scheduled as a group of its own, at its own
+position in the order. Every reference row is still used once per lap, and the same ``B``
+holds ``B/G`` prompts instead of ``B/4`` -- more prompts per step, fewer seeds per prompt. With
+two seeds per prompt the biased force's same-prompt repulsion is half the attraction; a
+``window.sibling_weight`` above 1 (1.5 restores the 4-seed balance of 3/4, ``unbiased_siblings``
+the full 1) sets it back (:mod:`rdm.sw_lmmd.local_mmd`).
+
 **Mixed schedules** (``window.group_pattern``, e.g. ``"GU"``). Grouped and ungrouped steps pull in
 opposite directions: grouped windows match each prompt's seed *distribution* (diverse, but no
 better than the reference), ungrouped ones regress each sample onto one reference (sharper, more
@@ -100,6 +109,25 @@ def _equal_groups(grouping_ids) -> np.ndarray:
         raise ValueError(f"grouped windows need the same number of rows per group; this store "
                          f"has between {counts.min()} and {counts.max()}")
     return np.argsort(gid, kind="stable").reshape(-1, group)
+
+
+def split_groups(grouping_ids, size: int, seed: int = 3407) -> np.ndarray:
+    """New grouping ids that cut every group into random sub-groups of ``size`` rows.
+
+    Which rows of a group end up together is drawn per group (seeded), so a sub-group is not
+    always "the two best-ranked references". ``size`` must divide the (equal) group size; equal
+    to it, the result is the same partition renumbered.
+    """
+    size = int(size)
+    groups = _equal_groups(grouping_ids)
+    g = groups.shape[1]
+    if size < 2 or g % size:
+        raise ValueError(f"group_size {size} must be >= 2 and divide the store's {g} rows per group")
+    rng = np.random.default_rng(seed)
+    rows = groups[np.arange(groups.shape[0])[:, None], np.argsort(rng.random(groups.shape), axis=1)]
+    out = np.empty(groups.size, dtype=np.int64)
+    out[rows.reshape(-1)] = np.arange(groups.size) // size
+    return out
 
 
 def _scatter_rows(groups: np.ndarray, separation: int, rng) -> np.ndarray:

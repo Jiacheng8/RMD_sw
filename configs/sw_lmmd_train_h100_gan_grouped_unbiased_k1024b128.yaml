@@ -1,0 +1,27 @@
+# Experiment 4: experiment 5 (grouped, K=1024 / B=128, COCO only) with the UNBIASED sibling
+# repulsion, still 4 seeds per prompt.
+#
+#   bash scripts/run_machine-new4.sh --root <root>
+#
+# Identical to sw_lmmd_train_h100_gan_grouped_k1024b128.yaml except `window.unbiased_siblings`.
+# Why: a fresh sample is pulled by its prompt's 4 references and pushed by its 3 siblings (its
+# own term has no gradient); the biased force weighs every term alike, so the same-prompt
+# repulsion is 3/4 of the attraction and the seeds settle narrower than the references. Each
+# sibling term now weighs 4/3, so the two balance. Alone, this shows what the 0.75 factor cost
+# (diversity, GenEval, PickScore); experiment 3 needs it to run with G = 2.
+#
+# New log keys: <encoder>/sibling_repulsion (the unweighted sibling part of the repulsion) and
+# sibling_weight (4/3).
+extends: sw_lmmd_train_h100_gan_grouped_k1024b128.yaml
+exp_name: sw-lmmd-flux-h100-gan-grouped-unbiased-k1024b128
+
+# `extends` merges top-level keys only, so the whole block is restated.
+window:
+  size: 1024                  # K = 256 prompts x 4 rows
+  stride: 128                 # B = 32 prompts x 4 rows
+  cyclic: true
+  order_seed: 3407
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+  group_by_prompt: true
+  unbiased_siblings: true     # each sibling repulsion term x G/(G-1) = 4/3

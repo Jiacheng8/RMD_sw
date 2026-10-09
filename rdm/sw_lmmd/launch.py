@@ -23,7 +23,8 @@ from .cache import GeneratedWindowCache
 from .config import CacheConfig, GANConfig, LRSchedule, MemoryPolicy, WindowConfig
 from .reference_store import ReferenceFeatureStore
 from .trainer import SWLMMDTrainer
-from .window_schedule import MixedGroupSchedule, SlidingWindowSchedule, build_grouped_row_order
+from .window_schedule import (MixedGroupSchedule, SlidingWindowSchedule, build_grouped_row_order,
+                              split_groups)
 
 logger = logging.getLogger("rdm")
 
@@ -258,8 +259,13 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
     if window.group_by_prompt and store.prompt_ids is None:
         raise ValueError("window.group_by_prompt needs a store with prompt_ids.npy (several "
                          "reference rows per prompt); this store has one row per prompt")
+    grouping = store.grouping_ids() if window.group_by_prompt else None
+    if window.group_by_prompt and window.group_size:
+        grouping = split_groups(grouping, window.group_size, window.order_seed)
+        logger.info("[sw_lmmd] window.group_size %d: each group cut into random sub-groups of %d "
+                    "rows, scheduled separately", window.group_size, window.group_size)
     if window.group_by_prompt and pattern != "G":
-        schedule = MixedGroupSchedule(store.grouping_ids(), pattern, window_size=window.size,
+        schedule = MixedGroupSchedule(grouping, pattern, window_size=window.size,
                                       stride=window.stride, cyclic=window.cyclic,
                                       seed=window.order_seed)
         n_g = int(schedule.kinds.sum())
@@ -269,7 +275,7 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
                     store.num_rows - schedule.num_rows, store.num_rows)
     else:
         if window.group_by_prompt:
-            row_order, group = build_grouped_row_order(store.grouping_ids(), window.order_seed)
+            row_order, group = build_grouped_row_order(grouping, window.order_seed)
             logger.info("[sw_lmmd] prompt-grouped window: %d rows per group -> %d groups per "
                         "window, %d fresh groups per step", group, window.size // group,
                         window.stride // group)
@@ -277,6 +283,16 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
             row_order, group = store.row_order(window.order_seed), 1
         schedule = SlidingWindowSchedule(row_order, window_size=window.size, stride=window.stride,
                                          cyclic=window.cyclic, group_size=group)
+    if window.unbiased_siblings or window.sibling_weight != 1.0:
+        g = schedule.group_size
+        if batching["per_rank"] % g:                       # fail before the model loads
+            raise ValueError(f"sibling weighting needs each rank's {batching['per_rank']} active "
+                             f"rows to be whole groups of {g}")
+        w = g / (g - 1) if window.unbiased_siblings else float(window.sibling_weight)
+        logger.info("[sw_lmmd] sibling repulsion weight %.3f (%s): same-prompt repulsion = %.2f x "
+                    "the attraction (plain biased force: %.2f)", w,
+                    "unbiased" if window.unbiased_siblings else "window.sibling_weight",
+                    w * (g - 1) / g, (g - 1) / g)
     generator, model = build_generator_from_config(cfg, device, param_dtype=policy.param_dtype)
     # Shard before the battery loads: until FSDP keeps only this rank's 1/world, every rank
     # holds the whole fp32 model (15.5 GB), which leaves a 24 GB card no room for encoders.
@@ -317,7 +333,8 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
         seed=getattr(cfg, "seed", 0), joint=getattr(cfg, "joint", True),
         grad_reduce=policy.grad_reduce, monitor_every=getattr(cfg, "monitor_every", 1),
         cache_cfg=cache_from_config(cfg), clip_module=clip_module, device=device, critic=critic,
-        lr_schedule=lr_schedule)
+        lr_schedule=lr_schedule, unbiased_siblings=window.unbiased_siblings,
+        sibling_weight=window.sibling_weight)
 
 
 def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SWLMMDTrainer:

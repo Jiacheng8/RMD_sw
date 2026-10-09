@@ -1,0 +1,29 @@
+# Experiment 3: grouped, K=1024 / B=128, COCO only, with TWO seeds per prompt and the unbiased
+# sibling repulsion.
+#
+#   bash scripts/run_machine-new3.sh --root <root>
+#
+# Identical to sw_lmmd_train_h100_gan_grouped_unbiased_k1024b128.yaml (experiment 4) except
+# `window.group_size: 2`. Each prompt's 4 reference rows are cut into two random pairs, and each
+# pair is scheduled on its own: a step's 128 fresh rows are 64 prompts x 2 seeds instead of
+# 32 x 4, every reference row is still used once per lap. Why: grouping fixed the seed collapse
+# (DreamSim ~1x the teacher) but GenEval and PickScore stayed below the ungrouped runs; if part
+# of that is seeing 4x fewer prompts per step, two seeds per prompt should win some of it back.
+# The unbiased weight is what keeps two seeds from collapsing: with one sibling the biased
+# repulsion would be only 1/2 of the attraction; weighted x2 it balances.
+#
+# Compare against experiment 4 (the group size alone) and experiment 5 (both changes).
+extends: sw_lmmd_train_h100_gan_grouped_unbiased_k1024b128.yaml
+exp_name: sw-lmmd-flux-h100-gan-grouped-g2-unbiased-k1024b128
+
+# `extends` merges top-level keys only, so the whole block is restated.
+window:
+  size: 1024                  # K = 512 prompt pairs
+  stride: 128                 # B = 64 prompts x 2 seeds
+  cyclic: true
+  order_seed: 3407            # seeds the pair split and the pair permutation
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+  group_by_prompt: true
+  group_size: 2               # 2 of a prompt's 4 rows per group
+  unbiased_siblings: true     # the sibling term x G/(G-1) = 2

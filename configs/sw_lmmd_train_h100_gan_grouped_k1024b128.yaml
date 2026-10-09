@@ -1,0 +1,28 @@
+# Experiment 5 (baseline of experiments 3-4): SW-LMMD + GAN + prompt-grouped windows at
+# K=1024 / B=128 on the COCO reference ONLY -- no GenEval block.
+#
+#   bash scripts/run_machine-new5.sh --root <root>        # env, data, train, eval in one command
+#
+# Identical to sw_lmmd_train_h100_gan_grouped_geneval_k1024b128.yaml (experiment 1) minus
+# `reference_extension`; equivalently sw_lmmd_train_h100_2gpu_gan_grouped.yaml (K=128 / B=32,
+# COCO only) with the window and B of experiment 1. Why: it is the run experiments 3 and 4 change
+# one thing against -- same window, same reference, same biased force with G = 4 seeds per
+# prompt. Experiment 1 cannot serve, its reference also holds the GenEval block.
+#
+# Memory per card as in experiment 1 (micro_batch 4); about 10-12 h for 2000 steps on 2 x H100.
+extends: sw_lmmd_train_h100_2gpu_gan_grouped.yaml
+exp_name: sw-lmmd-flux-h100-gan-grouped-k1024b128
+
+# `extends` merges top-level keys only, so the whole block is restated.
+window:
+  size: 1024                  # K = 256 prompts x 4 rows
+  stride: 128                 # B = 32 prompts x 4 rows (oldest cached row is 7 steps old)
+  cyclic: true
+  order_seed: 3407            # seeds the prompt permutation
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+  group_by_prompt: true
+active_global_batch: 128      # B; must equal window.stride
+
+# A step is ~4x longer than at B=32: write resume.pth every 100 steps (losing a run costs <= 100).
+resume_every: 100
