@@ -449,3 +449,27 @@ def test_g2_w15_config_differs_from_experiment_6_only_in_the_weight():
                 "grad_clip", "reference_root"):
         assert getattr(exp7, key) == getattr(exp6, key), key
     assert exp7.exp_name != exp6.exp_name
+
+
+def test_s3000_config_is_experiment_5_with_3000_steps():
+    from rdm.sw_lmmd.launch import (gan_from_config, lr_schedule_from_config, memory_from_config,
+                                    resolve_batching, window_from_config)
+
+    exp5 = _load("configs/sw_lmmd_train_h100_gan_grouped_k1024b128.yaml")
+    exp8 = _load("configs/sw_lmmd_train_h100_gan_grouped_k1024b128_s3000.yaml")
+    assert exp8.steps == 3000 and exp5.steps == 2000
+    assert window_from_config(exp8) == window_from_config(exp5)
+    w = window_from_config(exp8)
+    assert (w.size, w.stride, w.group_by_prompt, w.group_size, w.unbiased_siblings,
+            w.sibling_weight) == (1024, 128, True, 0, False, 1.0)
+    assert getattr(exp8, "reference_extension", None) in (None, "")
+    assert memory_from_config(exp8) == memory_from_config(exp5)
+    assert gan_from_config(exp8) == gan_from_config(exp5) and gan_from_config(exp8).enabled
+    for key in ("encoders", "lr", "save_freq", "joint", "loss", "cache", "grad_clip",
+                "reference_root", "active_global_batch", "resume_every"):
+        assert getattr(exp8, key) == getattr(exp5, key), key
+    assert exp8.exp_name != exp5.exp_name
+    sched = lr_schedule_from_config(exp8)                 # cosine over all 3000 steps
+    assert sched.name == "cosine" and sched.total_steps == 3000
+    assert sched.factor(2000) > 0.3 and sched.factor(2999) == pytest.approx(0.1, abs=1e-3)
+    assert resolve_batching(exp8, memory_from_config(exp8), w, world_size=2)["grad_accum"] == 16

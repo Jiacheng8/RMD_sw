@@ -9,7 +9,8 @@
 # one thing against -- same window, same reference, same biased force with G = 4 seeds per
 # prompt. Experiment 1 cannot serve, its reference also holds the GenEval block.
 #
-# Memory per card as in experiment 1 (micro_batch 4); about 10-12 h for 2000 steps on 2 x H100.
+# Memory per card as in experiment 1 (micro_batch 4); ~15 h for 2000 steps on 2 x H100 (measured on
+# experiment 1: 26.9 s per step).
 extends: sw_lmmd_train_h100_2gpu_gan_grouped.yaml
 exp_name: sw-lmmd-flux-h100-gan-grouped-k1024b128
 

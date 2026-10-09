@@ -1,0 +1,15 @@
+# Experiment 8: SW-LMMD + GAN + prompt-grouped windows (4 seeds per prompt) at K=1024 / B=128 on the
+# COCO reference ONLY (no GenEval block), trained for 3000 steps on 2 x H100.
+#
+#   bash scripts/run_machine-new8.sh --root <root>        # env, data, train (+ eval) in one command
+#
+# Identical to sw_lmmd_train_h100_gan_grouped_k1024b128.yaml (experiment 5) except `steps: 3000`.
+# The cosine lr keeps `total_steps: null`, so it decays over all 3000 steps (warm-up 100, floor
+# 0.1 x lr at step 3000); checkpoints every 200 steps -> 15 of them.
+#
+# Cost, measured on the K=1024 / B=128 run: 26.9 s per step on 2 x H100 -> ~22.5 h for 3000 steps.
+# Disk: 15 x 15.5 GB checkpoints + resume.pth (23 GB, x2 while replaced); the launcher refuses to
+# start with less than ~290 GB free in the output dir (~450 GB on a fresh machine in total).
+extends: sw_lmmd_train_h100_gan_grouped_k1024b128.yaml
+exp_name: sw-lmmd-flux-h100-gan-grouped-k1024b128-s3000
+steps: 3000
