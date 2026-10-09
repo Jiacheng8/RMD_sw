@@ -19,6 +19,7 @@
 # --root DIR   data root (default /root/rdm-sets); needs ~350 GB free.
 # --gpus N     training GPUs (default: every visible card, rounded down to 1/2/4/8 so B=32 splits
 #              into whole micro-batches). Choose cards with CUDA_VISIBLE_DEVICES. 80 GB cards.
+# --no-eval    train only: skip the evaluation when training ends.
 # Every other option goes to new_machine.sh unchanged (--gate, --micro-batch 2, --skip-env, ...).
 # (The shared body is scripts/_run_experiment.sh.)
 #

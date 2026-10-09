@@ -8,6 +8,7 @@
 # --root DIR   data root (default /root/rdm-sets); needs ~350 GB free.
 # --gpus N     training GPUs (default: every visible card, rounded down to 1/2/4/8 so B splits
 #              into whole micro-batches of 4). Choose cards with CUDA_VISIBLE_DEVICES.
+# --no-eval    train only: no GenEval / PickScore / diversity evaluation when training ends.
 # Every other option goes to new_machine.sh unchanged (--resume, --gate, --dry-run, ...).
 set -euo pipefail
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -20,11 +21,13 @@ MICRO=4                                     # the configs' memory.micro_batch
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="/root/rdm-sets"
 GPUS=""
+EVAL=(--eval)
 PASS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root)    ROOT="$2"; shift 2 ;;
     --gpus)    GPUS="$2"; shift 2 ;;
+    --no-eval) EVAL=(); shift ;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$LAUNCHER" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         PASS+=("$1"); shift ;;
   esac
@@ -45,6 +48,7 @@ fi
 
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 printf '\n\033[1m==> %s\033[0m\n' "$TITLE"
-printf '    config  %s\n    root    %s\n    gpus    %s for training (grad_accum %s), all visible ones for evaluation\n' \
-  "$CONFIG" "$ROOT" "$GPUS" "$(( B / (GPUS * MICRO) ))"
-exec bash "$REPO/scripts/new_machine.sh" --root "$ROOT" --config "$CONFIG" --gpus "$GPUS" --eval "${PASS[@]}"
+printf '    config  %s\n    root    %s\n    gpus    %s for training (grad_accum %s), %s\n' \
+  "$CONFIG" "$ROOT" "$GPUS" "$(( B / (GPUS * MICRO) ))" \
+  "$( (( ${#EVAL[@]} )) && echo 'all visible ones for evaluation' || echo 'no evaluation (--no-eval)')"
+exec bash "$REPO/scripts/new_machine.sh" --root "$ROOT" --config "$CONFIG" --gpus "$GPUS" "${EVAL[@]}" "${PASS[@]}"
