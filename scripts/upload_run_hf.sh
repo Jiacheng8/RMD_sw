@@ -8,10 +8,20 @@
 #   read -rs -p "HF write token: " HF_TOKEN && export HF_TOKEN
 #   bash scripts/upload_run_hf.sh --root /root/RMD_data               # defaults below
 #   bash scripts/upload_run_hf.sh --root /root/RMD_data --dry-run     # show the plan, upload nothing
+#   bash scripts/upload_run_hf.sh --root /root/RMD_data --watch 600   # keep uploading during the run
 #   unset HF_TOKEN
 #
 # Options: --run DIR (default <root>/sw_lmmd/work_dirs/sw-lmmd-flux-h100-2gpu), --repo ID (default
-# <token's account>/<run name>), --no-resume (skip the 23 GB resume.pth), --workers N, --dry-run.
+# <token's account>/<run name>), --no-resume (skip the 23 GB resume.pth), --workers N, --dry-run,
+# --watch SECONDS.
+#
+# --watch SECONDS: a pass every SECONDS while the run goes on (start it in its own tmux window next
+# to training): each pass stages and uploads only what is new -- every finished checkpoint, the
+# growing train_log.jsonl and logs, each eval_*/ dir once its summary.json exists. resume.pth (23 GB,
+# rewritten every few hundred steps) is held back until a final pass, which runs once
+# <run>/eval_summary.md appears (the one-command launchers write it when the evaluation ends) and
+# then stops; a failed pass (network) is retried at the next one. A run trained with --no-eval
+# writes no eval_summary.md: stop with Ctrl-C and run the plain command once more.
 #
 # Safe while training is still running: files are snapshotted into <root>/hf_upload/<run name>/ as
 # hard links (the trainer replaces checkpoints and resume.pth with os.replace, so a link keeps the
@@ -26,7 +36,7 @@ set -euo pipefail
 export PYTHONNOUSERSITE=1
 command -v conda >/dev/null 2>&1 || PATH="$PATH:/root/miniconda3/bin"
 
-ROOT=""; RUN=""; REPO_ID=""; WITH_RESUME=1; WORKERS=16; DRY=0
+ROOT=""; RUN=""; REPO_ID=""; WITH_RESUME=1; WORKERS=16; DRY=0; WATCH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root) ROOT="$2"; shift 2 ;;
@@ -35,11 +45,13 @@ while [[ $# -gt 0 ]]; do
     --no-resume) WITH_RESUME=0; shift ;;
     --workers) WORKERS="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    --watch) WATCH="$2"; shift 2 ;;
+    -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 [[ -n "$ROOT" ]] || { echo "need --root <data root> (e.g. /root/RMD_data)" >&2; exit 2; }
+[[ "$WATCH" =~ ^[0-9]+$ ]] || { echo "--watch takes a number of seconds, got '$WATCH'" >&2; exit 2; }
 RUN="${RUN:-$ROOT/sw_lmmd/work_dirs/sw-lmmd-flux-h100-2gpu}"
 [[ -d "$RUN" ]] || { echo "no run dir $RUN" >&2; exit 1; }
 NAME="$(basename "$RUN")"
@@ -79,13 +91,19 @@ link() {   # link <src> <dst>: snapshot src at dst; hard link when possible, els
   rm -f "$dst"
   ln "$real" "$dst" 2>/dev/null || ln -s "$real" "$dst"
 }
+one_pass() {   # one_pass <with_resume 1|0>: stage what exists now, upload what is new, verify
+local with_resume="$1"
 mkdir -p "$STAGE"
 info "staging into $STAGE"
 
 for f in "$RUN"/step_*.pth; do
   [[ -e "$f" ]] && link "$f" "$STAGE/$(basename "$f")"
 done
-if [[ $WITH_RESUME -eq 1 && -e "$RUN/resume.pth" ]]; then link "$RUN/resume.pth" "$STAGE/resume.pth"; fi
+if [[ $with_resume -eq 1 && -e "$RUN/resume.pth" ]]; then
+  link "$RUN/resume.pth" "$STAGE/resume.pth"
+else
+  rm -f "$STAGE/resume.pth"       # never upload an older staged copy
+fi
 for f in "$RUN"/train_log.jsonl "$RUN"/eval_summary*; do
   [[ -f "$f" ]] && cp -p "$f" "$STAGE/"   # small and still appended to: copy, not link
 done
@@ -116,15 +134,9 @@ info "plan ($(find -L "$STAGE" -type f -not -path '*/.cache/*' | wc -l) files, $
 (cd "$STAGE" && find -L . -maxdepth 1 -type f -name '*.pth' -printf '  %P  %s bytes\n' | sort)
 (cd "$STAGE" && find . -mindepth 1 -maxdepth 1 -type d -not -name .cache -printf '  %P/\n' | sort)
 info "HF private storage counts against $WHO's quota -- check https://huggingface.co/settings/billing if unsure"
-[[ $DRY -eq 1 ]] && { info "dry run: nothing uploaded"; exit 0; }
+[[ $DRY -eq 1 ]] && return 0
 
 # --- upload (resumable) ----------------------------------------------------------------------------
-py - "$REPO_ID" <<'EOF'
-import os, sys
-from huggingface_hub import create_repo
-print("[upload] repo:", create_repo(sys.argv[1], repo_type="model", private=True, exist_ok=True,
-                                    token=os.environ["HF_TOKEN"]))
-EOF
 info "uploading with $WORKERS workers (interrupt-safe: rerun the same command to continue)"
 hf upload-large-folder "$REPO_ID" "$STAGE" --repo-type model --num-workers "$WORKERS" --exclude ".cache/**"
 
@@ -146,5 +158,36 @@ total = sum(remote.values())
 print(f"[verify] {len(remote)} files on the hub, {total/1e9:.1f} GB; mismatches: {bad}")
 sys.exit(1 if bad else 0)
 EOF
+}
+
+# --- run: once, or a pass every --watch seconds ----------------------------------------------------
+if [[ $DRY -eq 1 ]]; then
+  one_pass "$WITH_RESUME"
+  info "dry run: nothing uploaded"
+  exit 0
+fi
+py - "$REPO_ID" <<'EOF'
+import os, sys
+from huggingface_hub import create_repo
+print("[upload] repo:", create_repo(sys.argv[1], repo_type="model", private=True, exist_ok=True,
+                                    token=os.environ["HF_TOKEN"]))
+EOF
+if [[ $WATCH -eq 0 ]]; then
+  one_pass "$WITH_RESUME"
+else
+  info "watch: a pass every ${WATCH}s; resume.pth only in the final pass, which runs once" \
+       "$RUN/eval_summary.md exists (Ctrl-C to stop earlier)"
+  while true; do
+    if [[ -f "$RUN/eval_summary.md" ]]; then
+      info "eval_summary.md is there: final pass"
+      if one_pass "$WITH_RESUME"; then break; fi
+      info "final pass incomplete; retrying in ${WATCH}s"
+    elif ! one_pass 0; then
+      info "pass incomplete (network?); retrying in ${WATCH}s"
+    fi
+    info "next pass at $(date -d "+${WATCH} seconds" +%H:%M:%S) (Ctrl-C to stop)"
+    sleep "$WATCH"
+  done
+fi
 info "done: https://huggingface.co/$REPO_ID  (download elsewhere: hf download $REPO_ID --local-dir <dir>)"
 info "remember: unset HF_TOKEN, and delete the write token on huggingface.co when you no longer need it"
