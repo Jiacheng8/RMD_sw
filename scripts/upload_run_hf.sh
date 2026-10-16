@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Upload everything a training run produced to a private Hugging Face model repo, so it survives
+# Upload everything a training run produced to a PUBLIC Hugging Face model repo, so it survives
 # the rented machine: every step_*.pth (symlinked ones followed), resume.pth, train_log.jsonl,
 # eval_summary*, eval_logs/, every finished eval_*/ dir (scores, logs, and the GenEval images
 # packed as one uncompressed eval_*/geneval.tar each -- tens of thousands of small PNGs upload and
 # download far better as one file), and <root>/sw_lmmd/logs/.
 #
-#   read -rs -p "HF write token: " HF_TOKEN && export HF_TOKEN
-#   bash scripts/upload_run_hf.sh --root /root/RMD_data               # defaults below
-#   bash scripts/upload_run_hf.sh --root /root/RMD_data --dry-run     # show the plan, upload nothing
-#   bash scripts/upload_run_hf.sh --root /root/RMD_data --watch 600   # keep uploading during the run
-#   unset HF_TOKEN
+#   bash scripts/upload_run_hf.sh --root /root/RMD_data                      # defaults below
+#   bash scripts/upload_run_hf.sh --root /root/RMD_data --repo my-run-name   # name the repo yourself
+#   bash scripts/upload_run_hf.sh --root /root/RMD_data --dry-run            # show the plan only
+#   bash scripts/upload_run_hf.sh --root /root/RMD_data --watch 600          # keep uploading
 #
-# Options: --run DIR (default <root>/sw_lmmd/work_dirs/sw-lmmd-flux-h100-2gpu), --repo ID (default
-# <token's account>/<run name>), --no-resume (skip the 23 GB resume.pth), --workers N, --dry-run,
-# --watch SECONDS.
+# It asks for the HF write token itself (hidden input) unless $HF_TOKEN is already set.
+#
+# Options: --run DIR (default <root>/sw_lmmd/work_dirs/sw-lmmd-flux-h100-2gpu), --repo NAME or
+# OWNER/NAME (a bare NAME goes under the token's account; default <token's account>/<run dir name>),
+# --no-resume (skip the 23 GB resume.pth), --workers N, --dry-run, --watch SECONDS.
+#
+# The repo is PUBLIC: created public, and switched to public if it already exists as private.
 #
 # --watch SECONDS: a pass every SECONDS while the run goes on (start it in its own tmux window next
 # to training): each pass stages and uploads only what is new -- every finished checkpoint, the
@@ -62,9 +65,11 @@ hf() { conda run -n rdm --no-capture-output hf "$@"; }
 info() { echo "[upload] $*"; }
 
 # --- token: must be a Write token; print the account it belongs to --------------------------------
+TOKEN_FROM_ENV=1
 if [[ -z "${HF_TOKEN:-}" ]]; then
-  [[ -t 0 ]] || { echo "export HF_TOKEN=<write token> first" >&2; exit 1; }
-  read -rs -p "HF write token: " HF_TOKEN; echo; export HF_TOKEN
+  [[ -t 0 ]] || { echo "no terminal to ask for the token: export HF_TOKEN=<write token> first" >&2; exit 1; }
+  read -rs -p "HF write token: " HF_TOKEN; echo; export HF_TOKEN   # lives only in this process
+  TOKEN_FROM_ENV=0
 fi
 WHO_ROLE=$(py - <<'EOF'
 import os
@@ -80,8 +85,11 @@ if [[ "$ROLE" == "read" ]]; then
   echo "this is a Read token; uploading needs a Write (or fine-grained write) token" >&2
   [[ $DRY -eq 1 ]] || exit 1
 fi
-REPO_ID="${REPO_ID:-$WHO/$NAME}"
-info "target repo: $REPO_ID (created private if new; an existing repo keeps its visibility)"
+if [[ -z "$REPO_ID" ]]; then REPO_ID="$WHO/$NAME"            # default: the run dir's name
+elif [[ "$REPO_ID" != */* ]]; then REPO_ID="$WHO/$REPO_ID"; fi  # a bare name: the token's account
+[[ "$REPO_ID" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]{1,96}$ ]] || {
+  echo "repo name '$REPO_ID': use letters, digits, '-', '_' or '.' (at most 96)" >&2; exit 2; }
+info "target repo: https://huggingface.co/$REPO_ID (PUBLIC: created public, or switched to public)"
 
 # --- stage: hard links (same disk) or symlinks (other disk) into $STAGE ---------------------------
 link() {   # link <src> <dst>: snapshot src at dst; hard link when possible, else a symlink to the real file
@@ -133,7 +141,7 @@ rm -f "$STAGE"/*.partial "$STAGE"/*/*.partial
 info "plan ($(find -L "$STAGE" -type f -not -path '*/.cache/*' | wc -l) files, $(du -shL --exclude=.cache "$STAGE" | cut -f1)):"
 (cd "$STAGE" && find -L . -maxdepth 1 -type f -name '*.pth' -printf '  %P  %s bytes\n' | sort)
 (cd "$STAGE" && find . -mindepth 1 -maxdepth 1 -type d -not -name .cache -printf '  %P/\n' | sort)
-info "HF private storage counts against $WHO's quota -- check https://huggingface.co/settings/billing if unsure"
+info "the repo is public: anyone can see and download these files"
 [[ $DRY -eq 1 ]] && return 0
 
 # --- upload (resumable) ----------------------------------------------------------------------------
@@ -168,9 +176,11 @@ if [[ $DRY -eq 1 ]]; then
 fi
 py - "$REPO_ID" <<'EOF'
 import os, sys
-from huggingface_hub import create_repo
-print("[upload] repo:", create_repo(sys.argv[1], repo_type="model", private=True, exist_ok=True,
-                                    token=os.environ["HF_TOKEN"]))
+from huggingface_hub import HfApi
+api = HfApi(token=os.environ["HF_TOKEN"])
+url = api.create_repo(sys.argv[1], repo_type="model", private=False, exist_ok=True)
+api.update_repo_settings(sys.argv[1], private=False, repo_type="model")   # an existing private repo
+print("[upload] repo (public):", url)
 EOF
 if [[ $WATCH -eq 0 ]]; then
   one_pass "$WITH_RESUME"
@@ -190,4 +200,5 @@ else
   done
 fi
 info "done: https://huggingface.co/$REPO_ID  (download elsewhere: hf download $REPO_ID --local-dir <dir>)"
-info "remember: unset HF_TOKEN, and delete the write token on huggingface.co when you no longer need it"
+[[ $TOKEN_FROM_ENV -eq 1 ]] && info "remember: unset HF_TOKEN"
+info "delete the write token on huggingface.co when you no longer need it"
