@@ -41,13 +41,19 @@ def _free_port() -> int:
 
 
 def _run(world: int, store: str, out_dir: str, micro_batch: int = 1, steps: int = 2,
-         gan: bool = False) -> dict:
+         gan: bool = False, critic: str = "row", window: int = 16, stride: int = 8,
+         pattern: str | None = None, critic_rows: str = "window") -> dict:
     """Launch ``world`` worker processes and return rank 0's recorded state."""
-    out = os.path.join(out_dir, f"w{world}_mb{micro_batch}{'_gan' if gan else ''}.pt")
+    tag = (f"_gan_{critic}_{critic_rows}" if gan else "") + f"_k{window}b{stride}" + \
+        (f"_{pattern}" if pattern else "")
+    out = os.path.join(out_dir, f"w{world}_mb{micro_batch}{tag}.pt")
     env = dict(os.environ, MASTER_ADDR="127.0.0.1", MASTER_PORT=str(_free_port()),
                WORLD_SIZE=str(world), OMP_NUM_THREADS="1")
     cmd = [sys.executable, WORKER, "--store", store, "--out", out,
-           "--micro-batch", str(micro_batch), "--steps", str(steps)] + (["--gan"] if gan else [])
+           "--micro-batch", str(micro_batch), "--steps", str(steps),
+           "--window", str(window), "--stride", str(stride)] + \
+        (["--gan", "--gan-critic", critic, "--gan-critic-rows", critic_rows] if gan else []) + \
+        (["--pattern", pattern] if pattern else [])
     procs = [subprocess.Popen(cmd, env=dict(env, RANK=str(r)), stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True) for r in range(world)]
     logs = []
@@ -132,3 +138,91 @@ def test_adversarial_term_is_world_size_invariant(world, single_gan, store_root,
         assert sharded["gan_logs"][key] == pytest.approx(single_gan["gan_logs"][key],
                                                          rel=1e-8, abs=1e-12), key
     assert sharded["force"] == pytest.approx(single_gan["force"], rel=1e-9, abs=1e-12)
+
+
+@pytest.fixture(scope="module")
+def single_block_gan(store_root, tmp_path_factory):
+    """K=16 / B=4: four blocks per window, so 1, 2 and 4 ranks all hold whole blocks."""
+    return _run(1, store_root, str(tmp_path_factory.mktemp("sw_parity_block")), gan=True,
+                critic="block", stride=4)
+
+
+@pytest.mark.parametrize("world", [2, 4])
+def test_block_critic_is_world_size_invariant(world, single_block_gan, store_root, tmp_path):
+    """Block critic: each rank's K/R share is whole blocks, its critic grads are mean-reduced;
+    the generator term scores the global block with only the rank's rows live, times R, so the
+    cross-rank mean of the parameter gradients is the single-process gradient."""
+    sharded = _run(world, store_root, str(tmp_path), gan=True, critic="block", stride=4)
+    for got, want in zip(sharded["grads"], single_block_gan["grads"]):
+        torch.testing.assert_close(got, want, rtol=1e-8, atol=1e-10)
+    for key, want in single_block_gan["critic"].items():
+        torch.testing.assert_close(sharded["critic"][key], want, rtol=1e-8, atol=1e-10, msg=key)
+    for key in ("gan/lambda", "gan/d_loss", "gan/d_acc", "gan/grad_ratio", "gan/g_loss"):
+        assert sharded["gan_logs"][key] == pytest.approx(single_block_gan["gan_logs"][key],
+                                                         rel=1e-8, abs=1e-12), key
+
+
+# --------------------------------------------------------------------------------------
+# a mixed G/U schedule with one block critic per kind (PerKindCritic)
+# --------------------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def grouped_store_root(tmp_path_factory):
+    """48 prompts x 4 rows with prompt_ids, so a mixed G/U schedule can be built."""
+    from sw_lmmd_fixtures import CTX_DIM, D_TXT, DIMS, NAMES
+    from rdm.sw_lmmd.reference_store import write_reference_store
+
+    rng = np.random.default_rng(5)
+    pid = np.repeat(np.arange(48), 4)[rng.permutation(192)]
+    text = rng.standard_normal((48, D_TXT)).astype(np.float32)
+    text /= np.linalg.norm(text, axis=1, keepdims=True)
+    return write_reference_store(
+        str(tmp_path_factory.mktemp("sw_parity_grouped")), prompt_ids=pid,
+        row_order=np.arange(pid.size), text_features=text,
+        context=rng.standard_normal((48, CTX_DIM)).astype(np.float32),
+        encoder_features={n: rng.standard_normal((pid.size, d)).astype(np.float32)
+                          for n, d in zip(NAMES, DIMS)},
+        bandwidths={n: {"sigma": 2.0, "beta": 1.0} for n in NAMES})
+
+
+@pytest.fixture(scope="module")
+def single_gu_block(grouped_store_root, tmp_path_factory):
+    return _run(1, grouped_store_root, str(tmp_path_factory.mktemp("sw_parity_gu")), gan=True,
+                critic="block", stride=4, pattern="GU")
+
+
+@pytest.mark.parametrize("world", [2, 4])
+def test_per_kind_block_critics_are_world_size_invariant(world, single_gu_block,
+                                                         grouped_store_root, tmp_path):
+    """Two steps (one grouped, one ungrouped): every rank steps both critics on the whole window,
+    and the generator term of each step is scored by its kind's critic over the global block."""
+    sharded = _run(world, grouped_store_root, str(tmp_path), gan=True, critic="block", stride=4,
+                   pattern="GU")
+    for got, want in zip(sharded["grads"], single_gu_block["grads"]):
+        torch.testing.assert_close(got, want, rtol=1e-8, atol=1e-10)
+    assert sharded["critic"].keys() == single_gu_block["critic"].keys()
+    for key, want in single_gu_block["critic"].items():            # both critics' weights
+        torch.testing.assert_close(sharded["critic"][key], want, rtol=1e-8, atol=1e-10, msg=key)
+    for key in ("gan/lambda", "gan/grouped/d_loss", "gan/ungrouped/d_loss", "gan/g_loss"):
+        assert sharded["gan_logs"][key] == pytest.approx(single_gu_block["gan_logs"][key],
+                                                         rel=1e-8, abs=1e-12), key
+
+
+
+# --------------------------------------------------------------------------------------
+# gan.critic_rows: active -- every rank steps the critic on the whole fresh block
+# --------------------------------------------------------------------------------------
+@pytest.mark.parametrize("world", [2, 4])
+@pytest.mark.parametrize("pattern", [None, "GU"])
+def test_active_rows_block_critics_are_world_size_invariant(world, pattern, store_root,
+                                                            grouped_store_root, tmp_path):
+    store = grouped_store_root if pattern else store_root
+    kw = dict(gan=True, critic="block", stride=4, pattern=pattern, critic_rows="active")
+    single = _run(1, store, str(tmp_path), **kw)             # file names carry the world size
+    sharded = _run(world, store, str(tmp_path), **kw)
+    for got, want in zip(sharded["grads"], single["grads"]):
+        torch.testing.assert_close(got, want, rtol=1e-8, atol=1e-10)
+    for key, want in single["critic"].items():
+        torch.testing.assert_close(sharded["critic"][key], want, rtol=1e-8, atol=1e-9, msg=key)
+    for key in ("gan/lambda", "gan/d_loss", "gan/g_loss"):
+        assert sharded["gan_logs"][key] == pytest.approx(single["gan_logs"][key],
+                                                         rel=1e-8, abs=1e-12), key

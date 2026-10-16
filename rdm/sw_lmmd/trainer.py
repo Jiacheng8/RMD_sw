@@ -108,6 +108,28 @@ class SWLMMDTrainer:
         if critic is not None and schedule.window_size % get_world_size():
             raise ValueError(f"window size {schedule.window_size} is not divisible by "
                              f"world_size={get_world_size()}; the critic step shards the window")
+        # A block critic's sample is one step's B fresh rows: the window must be whole blocks
+        # and every rank's K/R share whole blocks. A grouped block and an ungrouped one are
+        # different inputs, so a mixed G/U schedule takes one critic per kind (PerKindCritic)
+        # and only a mixed schedule does.
+        if critic is not None and getattr(critic, "block", None):
+            K, B, R = schedule.window_size, schedule.stride, get_world_size()
+            if critic.block != B:
+                raise ValueError(f"the block critic was built for blocks of {critic.block} rows, "
+                                 f"the window stride is B={B}: one sample is one step's B rows")
+            # (only when the critic trains on the window: on the fresh block alone, every rank
+            # takes that whole block)
+            if critic.cfg.critic_rows == "window" and (K % B or (K // B) % R):
+                raise ValueError(f"the block critic needs the window K={K} to be whole blocks of "
+                                 f"B={B} and those blocks to split evenly over world_size={R}")
+            mixed = bool(getattr(schedule, "group_pattern", None))
+            if mixed and not getattr(critic, "per_kind", False):
+                raise ValueError("a mixed G/U schedule needs one block critic per step kind "
+                                 "(grouped and ungrouped blocks are different inputs): build it "
+                                 "with build_critic(..., per_kind=True)")
+            if getattr(critic, "per_kind", False) and not mixed:
+                raise ValueError("per-kind block critics need a mixed G/U schedule "
+                                 "(window.group_pattern); this schedule has one kind of step")
 
         # Weighted same-prompt repulsion: each sibling term weighs G/(G-1) (unbiased_siblings, the
         # unbiased per-prompt estimator) or sibling_weight. Siblings are found as blocks of G
@@ -194,27 +216,78 @@ class SWLMMDTrainer:
         """Critic step on the window, then ``force + lambda * adversarial`` on the live rows.
 
         ``window_feats`` holds each critic encoder's ``(generated context, reference)``, both
-        ``K`` rows in window order and detached. This rank trains the critic on its contiguous
-        ``K/R`` share of them. The generator side then uses only this rank's live active rows,
-        exactly like the force.
+        ``K`` rows in window order and detached. With ``gan.critic_rows: window`` this rank
+        trains the critic on its contiguous ``K/R`` share of them; with ``active`` every rank
+        trains it on the step's ``B`` fresh rows only (the last ``B``, all of them on every rank:
+        the same computation everywhere, so the result does not depend on the world size). The
+        generator side then uses only this rank's live active rows, exactly like the force.
         """
         critic = self.critic
-        share = partition_rows(np.arange(window.all_ids.size))
-        lo, hi = int(share[0]), int(share[-1]) + 1
-        tau = self.store.text_features(window.all_ids[lo:hi], device=self.device,
-                                       dtype=self.feature_dtype) if critic.conditional else None
-        logs.update(critic.update({n: ctx[lo:hi] for n, (ctx, _) in window_feats.items()},
-                                  {n: ref[lo:hi] for n, (_, ref) in window_feats.items()}, tau))
+        per_kind = getattr(critic, "per_kind", False)
+        if critic.cfg.critic_rows == "active":
+            n = window.active_ids.size
+            tau = self.store.text_features(window.active_ids, device=self.device,
+                                           dtype=self.feature_dtype) if critic.conditional else None
+            fake = {name: ctx[-n:] for name, (ctx, _) in window_feats.items()}
+            real = {name: ref[-n:] for name, (_, ref) in window_feats.items()}
+            if per_kind:                  # only the critic of this step's kind takes a step
+                logs.update(critic.update(fake, real, tau, kinds=[bool(window.active_grouped)],
+                                          active_kind=bool(window.active_grouped)))
+            else:
+                logs.update(critic.update(fake, real, tau))
+            scorer = critic.select(window.active_grouped) if per_kind else critic
+        elif per_kind:
+            # one critic per kind, each stepped on the window's blocks of its kind; every rank
+            # takes the whole window (PerKindCritic), and the current step's kind scores below
+            tau = self.store.text_features(window.all_ids, device=self.device,
+                                           dtype=self.feature_dtype) if critic.conditional else None
+            logs.update(critic.update({n: ctx for n, (ctx, _) in window_feats.items()},
+                                      {n: ref for n, (_, ref) in window_feats.items()}, tau,
+                                      kinds=self.schedule.block_kinds(window),
+                                      active_kind=bool(window.active_grouped)))
+            scorer = critic.select(window.active_grouped)
+        else:
+            share = partition_rows(np.arange(window.all_ids.size))
+            lo, hi = int(share[0]), int(share[-1]) + 1
+            tau = self.store.text_features(window.all_ids[lo:hi], device=self.device,
+                                           dtype=self.feature_dtype) if critic.conditional else None
+            logs.update(critic.update({n: ctx[lo:hi] for n, (ctx, _) in window_feats.items()},
+                                      {n: ref[lo:hi] for n, (_, ref) in window_feats.items()}, tau))
+            scorer = critic
         if not critic.generator_active(self.step_idx):
             return force
-        tau = self.store.text_features(local_active, device=self.device,
+        if critic.block:          # the whole step's block, this rank's rows live (x R, see below)
+            feats, ids, scale = self._live_block(local_feats, window_feats, window), \
+                window.active_ids, float(get_world_size())
+        else:
+            feats, ids, scale = local_feats, local_active, 1.0
+        tau = self.store.text_features(ids, device=self.device,
                                        dtype=self.feature_dtype) if critic.conditional else None
-        adv, adv_logs = critic.generator_loss(local_feats, tau)
-        lam, bal_logs = critic.balance(force, adv, local_feats, self.image_dims)
+        adv, adv_logs = scorer.generator_loss(feats, tau, scale=scale)
+        lam, bal_logs = scorer.balance(force, adv, local_feats, self.image_dims)
         logs.update(adv_logs)
         logs.update(bal_logs)
         logs["_force"] = float(force.detach())
         return force + lam * adv
+
+    @staticmethod
+    def _live_block(local_feats: dict, window_feats: dict, window) -> dict:
+        """The step's ``B`` fresh rows for the block critic, in window order.
+
+        The last ``B`` context rows are every rank's active features, gathered detached; this
+        rank's contiguous slice is swapped for its live rows. Every rank then scores the same
+        global block, and gradient reaches only its own rows. The trainer multiplies that loss
+        by the world size, so the cross-rank mean of the parameter gradients is the block's
+        full gradient -- the force's ``1/(B_local K)`` telescoping, for a loss over all of B.
+        """
+        n = window.active_ids.size
+        mine = partition_rows(np.arange(n))
+        lo, hi = int(mine[0]), int(mine[-1]) + 1
+        out = {}
+        for name, (context, _) in window_feats.items():
+            active = context[-n:]
+            out[name] = torch.cat([active[:lo], local_feats[name].to(active.dtype), active[hi:]])
+        return out
 
     # ------------------------------------------------------------------ bootstrap
     def bootstrap(self) -> dict:

@@ -1,0 +1,51 @@
+# Experiment 11: SW-LMMD + a BLOCK GAN critic on UNGROUPED windows, 2 x H100, COCO reference only
+# (no GenEval block), K=128 / B=32.
+#
+#   bash scripts/run_machine-new11.sh --root <root>       # env, data, train, eval in one command
+#
+# Identical to sw_lmmd_train_h100_2gpu_gan.yaml ("K128 · GAN", ungrouped, row critic) except
+# `gan.critic: block` and micro_batch 4 (memory only: micro-batching does not change the
+# gradient, tests/test_sw_lmmd_adversarial.py; 8 OOMed with the fp32 battery in the grouped run,
+# and the one-command launchers split B into micro-batches of 4).
+#
+# The non-group half of the block-critic test: the critic takes a step's B=32 fresh rows -- here
+# 32 different prompts, one seed each -- as ONE sample (B x L) against the same rows' 32
+# references, instead of scoring each image alone. Compare with K128 · GAN (GenEval 0.827,
+# seed diversity 0.42x the teacher, row critic). Note an ungrouped block never holds two seeds of
+# one prompt, so the critic cannot see the seed collapse itself, only how a batch of different
+# prompts looks together. Grouped: experiment 9; alternating: experiment 10.
+extends: sw_lmmd_train_h100_2gpu_gan.yaml
+exp_name: sw-lmmd-flux-h100-2gpu-gan-blockcritic
+
+# `extends` merges top-level keys only, so both blocks are restated in full.
+memory:
+  shard: none
+  grad_reduce: mean
+  optimizer: adamw8bit
+  param_dtype: fp32
+  battery_bf16: false         # the critic needs the store's encoder pipeline
+  micro_batch: 4              # 8 in the row-critic run; see above
+  encoder_offload: false
+
+gan:
+  enabled: true
+  encoders: null
+  weight: 1.5                 # |g_adv| = 1.5 x |g_mmd|, as in the row-critic run
+  adaptive: true
+  min_norm_ratio: 0.001
+  loss: hinge
+  lr: 2.0e-4
+  betas: [0.0, 0.99]
+  hidden: 1024                # row-critic sizes, unused by the block critic
+  depth: 2
+  spectral_norm: true
+  r1_gamma: 0.0
+  g_start_step: 50
+  conditional: true
+  stats_rows: 8192
+  seed: 0
+  critic: block               # one logit per step's B=32 fresh rows (B x L), not per image
+  critic_rows: active         # the critic trains on the step's fresh block only (1 real, 1 fake)
+  block_width: 256
+  block_layers: 2
+  block_heads: 4

@@ -196,3 +196,148 @@ def test_mixed_config_differs_from_its_base_only_in_the_pattern():
                 "reference_extension"):
         assert getattr(cfg, key) == getattr(base, key), key
     assert cfg.exp_name != base.exp_name
+
+
+# --------------------------------------------------------------------------------------
+# block GAN critics on a mixed schedule: one per step kind (rdm.sw_lmmd.adversarial.PerKindCritic)
+# --------------------------------------------------------------------------------------
+_BLOCK = {"critic": "block", "block_width": 16, "block_heads": 2, "block_layers": 1}
+
+
+@pytest.mark.parametrize("num_groups", [120, 400])
+def test_block_kinds_are_the_window_segments_and_end_with_the_active_kind(num_groups):
+    gid = _gids(num_groups)
+    sched = MixedGroupSchedule(gid, "GUU", window_size=64, stride=16, seed=2)
+    prev = None
+    for step in range(3 * sched.kinds.size + 5):            # through the cyclic wrap
+        if step and step % 7 == 0:
+            sched.new_epoch(seed=step)                       # re-split, re-anchor, maybe reverse
+            prev = None
+        w = sched.next()
+        kinds = sched.block_kinds(w)
+        assert kinds.size == 4 and kinds[-1] == w.active_grouped
+        grouped = [set(w.all_ids[i * 16:(i + 1) * 16].tolist()) for i in np.flatnonzero(kinds)]
+        assert grouped == _grouped_blocks(sched, w)
+        for i in np.flatnonzero(kinds):
+            assert _whole_groups(w.all_ids[i * 16:(i + 1) * 16], gid)
+        if prev is not None:
+            assert np.array_equal(kinds[:-1], prev[1:])      # a block keeps its kind as it slides
+        prev = kinds
+    plain = SlidingWindowSchedule(np.arange(64), window_size=16, stride=4)
+    assert not plain.block_kinds(plain.next()).any()
+
+
+def test_gu_trains_one_block_critic_per_kind(grouped_store):
+    trainer = build_trainer(grouped_store, window=16, stride=4, lr=1e-2, pattern="GU",
+                            gan={**_BLOCK, "weight": 0.5})
+    critics = trainer.critic.critics
+    start = {k: [p.detach().clone() for p in c.critic.parameters()] for k, c in critics.items()}
+    trainer.bootstrap()
+    for i in range(4):
+        logs = trainer.step()
+        kind = "grouped" if logs["grouped_step"] else "ungrouped"
+        for label in ("grouped", "ungrouped"):          # 2 + 2 blocks of each kind per window
+            assert f"gan/{label}/d_acc" in logs and not logs[f"gan/{label}/d_skipped"]
+        assert logs["gan/d_acc"] == logs[f"gan/{kind}/d_acc"]     # the scoring critic's numbers
+        assert "gan/lambda" in logs and not logs["skipped"]
+        assert critics[True].updates == critics[False].updates == i + 1
+    for k, c in critics.items():
+        assert any(not torch.equal(a, b) for a, b in zip(start[k], c.critic.parameters()))
+    state = trainer.state_dict()["critic"]
+    assert set(state) == {"grouped", "ungrouped"}
+
+
+@pytest.mark.parametrize("steps", [1, 2])                 # step 1 is grouped, step 2 ungrouped
+def test_gu_generator_term_is_scored_by_the_critic_of_the_step_kind(grouped_store, steps):
+    """GradCache with per-kind critics == one graph through the force and the critic of the
+    current step's kind (critic lr 0 and no spectral norm, so the critic step changes nothing)."""
+    trainer = build_trainer(grouped_store, window=16, stride=4, micro_batch=1, pattern="GU",
+                            gan={**_BLOCK, "weight": 0.5, "lr": 0.0, "spectral_norm": False})
+    trainer.bootstrap()
+    for _ in range(steps - 1):
+        trainer.step()
+    window = trainer.schedule.peek() if trainer._pending_window is None else trainer._pending_window
+
+    feats = trainer._encode(window.active_ids)
+    force = None
+    for name in NAMES:
+        context = torch.cat([trainer.cache.retained(name, window.retained_ids),
+                             feats[name].detach()])
+        reference = trainer._reference_window(name, window.all_ids)
+        f, _ = trainer.mmd.active_force(feats[name], context, reference, trainer.sigmas[name])
+        term = trainer.encoder_weights[name] * f
+        force = term if force is None else force + term
+    scorer = trainer.critic.select(window.active_grouped)
+    tau = trainer.store.text_features(window.active_ids, dtype=torch.float64)
+    adv, _ = scorer.generator_loss(feats, tau)
+    lam, _ = scorer.balance(force, adv, feats, trainer.image_dims)
+    trainer.optimizer.zero_grad(set_to_none=True)          # drop step 1's gradient first
+    (force + lam * adv).backward()
+    want = [p.grad.clone() for p in trainer._gen_params]
+    trainer.optimizer.zero_grad(set_to_none=True)
+
+    logs = trainer.step()
+    assert logs["grouped_step"] == int(steps == 1)
+    assert logs["gan/lambda"] == pytest.approx(lam, rel=1e-10)
+    for got, ref in zip(trainer._gen_params, want):
+        torch.testing.assert_close(got.grad, ref, rtol=1e-9, atol=1e-12)
+
+
+def test_block_critics_match_the_schedule_kinds(grouped_store):
+    with pytest.raises(ValueError, match="one block critic per step kind"):
+        build_trainer(grouped_store, window=16, stride=4, pattern="GU", gan=_BLOCK, per_kind=False)
+    with pytest.raises(ValueError, match="need a mixed G/U schedule"):
+        build_trainer(grouped_store, window=16, stride=4, gan=_BLOCK, per_kind=True)
+    with pytest.raises(ValueError, match="block critic"):
+        build_trainer(grouped_store, window=16, stride=4, pattern="GU", gan={}, per_kind=True)
+    # a row critic on a mixed schedule stays the one shared critic it always was
+    assert not getattr(build_trainer(grouped_store, window=16, stride=4, pattern="GU",
+                                     gan={}).critic, "per_kind", False)
+
+
+def test_per_kind_critic_state_round_trip(grouped_store):
+    a = build_trainer(grouped_store, window=16, stride=4, pattern="GU", gan={**_BLOCK, "lr": 1e-2})
+    a.bootstrap()
+    a.step()
+    b = build_trainer(grouped_store, window=16, stride=4, pattern="GU", gan={**_BLOCK, "seed": 9})
+    b.critic.load_state_dict(a.critic.state_dict())
+    for x, y in zip(a.critic.critic.state_dict().values(), b.critic.critic.state_dict().values()):
+        assert torch.equal(x, y)
+    assert b.critic.updates == a.critic.updates == 2
+
+
+def test_gu_block_critic_config_differs_from_experiment_9_only_in_the_pattern():
+    import dataclasses
+
+    from rdm.sw_lmmd.launch import gan_from_config, memory_from_config, window_from_config
+    from rdm.train.launch import load_config
+
+    base = load_config("configs/sw_lmmd_train_h100_2gpu_gan_grouped_blockcritic.yaml")
+    cfg = load_config("configs/sw_lmmd_train_h100_2gpu_gan_mixGU_blockcritic.yaml")
+    w = window_from_config(cfg)
+    assert (w.size, w.stride, w.group_pattern) == (128, 32, "GU")
+    assert dataclasses.replace(w, group_pattern="G") == window_from_config(base)
+    assert gan_from_config(cfg) == gan_from_config(base) and gan_from_config(cfg).critic == "block"
+    assert memory_from_config(cfg) == memory_from_config(base)
+    for key in ("encoders", "lr", "steps", "joint", "loss", "cache", "lr_schedule"):
+        assert getattr(cfg, key) == getattr(base, key), key
+    assert not getattr(cfg, "reference_extension", None)          # COCO only
+    assert cfg.exp_name != base.exp_name
+
+
+
+def test_gu_active_rows_step_only_the_critic_of_the_step_kind(grouped_store):
+    trainer = build_trainer(grouped_store, window=16, stride=4, lr=1e-2, pattern="GU",
+                            gan={**_BLOCK, "weight": 0.5, "critic_rows": "active"})
+    critics = trainer.critic.critics
+    trainer.bootstrap()
+    for i in range(4):
+        before = {k: [p.detach().clone() for p in c.critic.parameters()] for k, c in critics.items()}
+        logs = trainer.step()
+        kind, other = (True, False) if logs["grouped_step"] else (False, True)
+        label = "grouped" if kind else "ungrouped"
+        assert f"gan/{label}/d_acc" in logs and logs["gan/d_acc"] == logs[f"gan/{label}/d_acc"]
+        assert not any(k.startswith(f"gan/{'ungrouped' if kind else 'grouped'}/") for k in logs)
+        assert any(not torch.equal(a, b) for a, b in zip(before[kind], critics[kind].critic.parameters()))
+        assert all(torch.equal(a, b) for a, b in zip(before[other], critics[other].critic.parameters()))
+    assert critics[True].updates == critics[False].updates == 2

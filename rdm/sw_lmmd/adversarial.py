@@ -24,6 +24,24 @@ What it sees
     images. The retained rows are up to ``ceil(K/B) - 1`` steps old. That makes them a free
     replay buffer, with the same staleness the force already accepts.
 
+Row critic vs block critic (``gan.critic``)
+    The default ``row`` critic gives every image its own logit, so it cannot see how the rows
+    of a step relate: whether the seeds of a prompt agree on the object count or the layout, or
+    have collapsed to one image. The ``block`` critic takes a step's ``B`` fresh rows as ONE
+    sample, ``B x L``. Every row is a token (its image feature plus a projection of its caption,
+    so the seeds of one prompt carry the same text signal), a small Transformer encoder without
+    positional encoding mixes them, and the mean token is scored; without positions the score
+    ignores the row order. The window slides by ``B``, so its ``K`` rows are ``K/B`` consecutive
+    such blocks, each one step's fresh rows when it was generated. With ``gan.critic_rows:
+    window`` the critic trains on all ``K/B`` real and fake blocks per step (the cached ones are
+    up to ``K/B - 1`` steps old); with ``active`` on the current step's block alone (one real,
+    one fake). The generator term always scores the current step's block.
+
+    What a block holds depends on the schedule -- ``B/G`` whole prompts in a grouped window,
+    ``B`` different prompts in an ungrouped one -- so a mixed G/U schedule gets one block critic
+    per kind (:class:`PerKindCritic`): every block trains the critic of its kind, and the
+    generator term is scored by the critic of the current step's kind.
+
 Order within one step (alternating, not simultaneous)
     1. pass 1 -> cached active features;
     2. one critic step on the window (real = reference rows, fake = generated context);
@@ -151,24 +169,60 @@ class _ProjectionHead(nn.Module):
         return logit
 
 
-class FeatureCritic(nn.Module):
-    """Per-encoder projection heads over standardized pooled features.
+class _BlockHead(nn.Module):
+    """One encoder's critic over blocks of rows: ``(n, b, d_img) -> (n,)``, one logit per block.
 
-    ``forward({name: (n, d_img)}, tau (n, d_txt) or None) -> {name: (n,) logits}``.
+    Each row is a token ``inp(phi) + txt(tau)``; a pre-norm Transformer encoder with no
+    positional encoding mixes the ``b`` tokens, and the mean token is scored. Without positions
+    the logit does not depend on the order of the rows inside a block. The caption enters every
+    token, so attention can tell which rows are seeds of the same prompt.
+    """
+
+    def __init__(self, d_img: int, d_txt: int, width: int, layers: int, heads: int,
+                 spectral_norm: bool):
+        super().__init__()
+        sn = nn.utils.parametrizations.spectral_norm if spectral_norm else (lambda m: m)
+        self.inp = sn(nn.Linear(d_img, width))
+        self.txt = sn(nn.Linear(d_txt, width, bias=False)) if d_txt else None
+        layer = nn.TransformerEncoderLayer(width, heads, dim_feedforward=2 * width, dropout=0.0,
+                                           activation="gelu", batch_first=True, norm_first=True)
+        self.body = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
+        self.norm = nn.LayerNorm(width)
+        self.out = sn(nn.Linear(width, 1))
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor | None = None) -> torch.Tensor:
+        h = self.inp(x)
+        if self.txt is not None:
+            h = h + self.txt(t)
+        h = self.body(h)
+        return self.out(self.norm(h.mean(1))).squeeze(-1)
+
+
+class FeatureCritic(nn.Module):
+    """Per-encoder critic heads over standardized pooled features.
+
+    Row heads (default): ``forward({name: (n, d_img)}, tau (n, d_txt) or None) -> {name: (n,)}``.
+    With ``block`` (``{"width", "layers", "heads"}``) every head is a :class:`_BlockHead`:
+    ``forward({name: (n, b, d_img)}, tau (n, b, d_txt) or None) -> {name: (n,)}``, one logit
+    per block of ``b`` rows. The standardization is the same either way.
     """
 
     def __init__(self, image_dims: dict, image_stats: dict, *, text_dim: int = 0,
                  text_stats=None, hidden: int = 1024, depth: int = 2,
-                 spectral_norm: bool = True):
+                 spectral_norm: bool = True, block: dict | None = None):
         super().__init__()
         self.names = list(image_dims)
         self.image_dims = {n: int(d) for n, d in image_dims.items()}
         self.conditional = text_dim > 0
         self.image_norm = nn.ModuleDict({n: _Standardize(*image_stats[n]) for n in self.names})
         self.text_norm = _Standardize(*text_stats) if self.conditional else None
-        self.heads = nn.ModuleDict({
-            n: _ProjectionHead(self.image_dims[n], text_dim, hidden, depth, spectral_norm)
-            for n in self.names})
+
+        def head(d: int) -> nn.Module:
+            if block:
+                return _BlockHead(d, text_dim, int(block["width"]), int(block["layers"]),
+                                  int(block["heads"]), spectral_norm)
+            return _ProjectionHead(d, text_dim, hidden, depth, spectral_norm)
+        self.heads = nn.ModuleDict({n: head(self.image_dims[n]) for n in self.names})
 
     def standardize(self, phi: dict, tau: torch.Tensor | None = None):
         if self.conditional and tau is None:
@@ -222,12 +276,16 @@ class AdversarialCritic:
 
     :meth:`update` takes one critic step on detached window features, :meth:`generator_loss`
     scores the live active features, and :meth:`balance` sets lambda against the force.
+
+    ``block`` (the stride ``B``) makes it a block critic: every method still receives rows in
+    window order, and :meth:`_samples` cuts them into consecutive blocks of ``block`` rows.
     """
 
     def __init__(self, critic: FeatureCritic, cfg: GANConfig, device="cpu",
-                 dtype: torch.dtype = torch.float32):
+                 dtype: torch.dtype = torch.float32, block: int | None = None):
         self.cfg = cfg
         self.dtype = dtype
+        self.block = int(block) if block else None
         self.critic = critic.to(device=device, dtype=dtype).eval()
         self.names = list(critic.names)
         self.image_dims = dict(critic.image_dims)
@@ -250,21 +308,32 @@ class AdversarialCritic:
     def _text(self, tau):
         return tau.to(self.dtype) if self.conditional else None
 
+    def _samples(self, x: torch.Tensor | None) -> torch.Tensor | None:
+        """Rows ``(n, d)`` -> the critic's samples: the rows themselves, or ``(n/b, b, d)``."""
+        if x is None or not self.block:
+            return x
+        if x.shape[0] % self.block:
+            raise ValueError(f"{x.shape[0]} rows do not cut into whole blocks of {self.block}")
+        return x.reshape(x.shape[0] // self.block, self.block, *x.shape[1:])
+
     # ---------------------------------------------------------------- critic step
     def update(self, fake: dict, real: dict, tau: torch.Tensor | None = None) -> dict:
         """One critic step on this rank's share of the window, gradients averaged over ranks.
 
         ``fake`` and ``real`` are the SAME rows (generated / reference), so they share ``tau``.
         Real and fake go through one forward, which keeps spectral norm at one power
-        iteration per step on every rank and at every world size.
+        iteration per step on every rank and at every world size. A block critic gets the
+        same rows; the share must be whole blocks (the trainer checks ``K/B`` against the
+        world size).
         """
         cfg = self.cfg
-        fake, real = self._image(fake), self._image(real)
+        fake = {n: self._samples(v) for n, v in self._image(fake).items()}
+        real = {n: self._samples(v) for n, v in self._image(real).items()}
         n_real = next(iter(real.values())).shape[0]
         if next(iter(fake.values())).shape[0] != n_real:
             raise ValueError("update() expects the generated and reference rows of the SAME "
                              "window rows")
-        t = self._text(tau)
+        t = self._samples(self._text(tau))
         self.critic.train()
         x, tt = self.critic.standardize(
             {n: torch.cat([real[n], fake[n]], 0).detach() for n in self.names},
@@ -279,7 +348,7 @@ class AdversarialCritic:
         if cfg.r1_gamma > 0:      # on the standardized input, so gamma is comparable across heads
             grads = torch.autograd.grad(sum(lg[:n_real].sum() for lg in logits.values()),
                                         [x[n] for n in self.names], create_graph=True)
-            r1 = sum(g[:n_real].pow(2).sum(1).mean() for g in grads) / len(self.names)
+            r1 = sum(g[:n_real].pow(2).flatten(1).sum(1).mean() for g in grads) / len(self.names)
             loss = loss + 0.5 * cfg.r1_gamma * r1
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -323,19 +392,26 @@ class AdversarialCritic:
         return bool(torch.isfinite(flat).all())
 
     # ---------------------------------------------------------------- generator side
-    def generator_loss(self, feats: dict, tau: torch.Tensor | None = None):
+    def generator_loss(self, feats: dict, tau: torch.Tensor | None = None, scale: float = 1.0):
         """The adversarial term on the live active features.
 
         Gradient reaches ``feats``, never the critic, whose parameters are frozen for this
         graph. Otherwise the generator's backward would also accumulate into the critic.
+
+        A row critic gets this rank's live rows. A block critic gets the whole step's block --
+        every rank's rows, only this rank's live (see the trainer) -- and ``scale`` = world
+        size, so the cross-rank gradient mean returns the block's full gradient, as the force's
+        ``1/(B_local K)`` does. The logged ``gan/g_loss`` is the unscaled value.
         """
-        phi, t = self._image(feats), self._text(tau)
+        phi = {n: self._samples(v) for n, v in self._image(feats).items()}
+        t = self._samples(self._text(tau))
         self.critic.eval()
         with _frozen(self.critic):
             logits = self.critic(phi, t)
         loss = sum(adversarial_loss(lg, self.cfg.loss) for lg in logits.values()) / len(self.names)
         mean_logit = torch.stack([lg.detach().mean() for lg in logits.values()]).mean()
-        return loss, {"gan/g_loss": float(loss.detach()), "gan/g_fake": float(mean_logit)}
+        logs = {"gan/g_loss": float(loss.detach()), "gan/g_fake": float(mean_logit)}
+        return (loss * scale if scale != 1.0 else loss), logs
 
     def balance(self, mmd_loss: torch.Tensor, adv_loss: torch.Tensor, leaves: dict,
                 image_dims: dict) -> tuple[float, dict]:
@@ -382,10 +458,103 @@ class AdversarialCritic:
         self.updates = int(state.get("updates", 0))
 
 
+def _kind_label(grouped: bool) -> str:
+    return "grouped" if grouped else "ungrouped"
+
+
+class PerKindCritic:
+    """One block critic per step kind of a mixed G/U schedule, behind the trainer's interface.
+
+    A grouped block (``B/G`` whole prompts) and an ungrouped one (``B`` different prompts) are
+    different inputs, so each kind has its own critic and optimizer. :meth:`update` sends every
+    block it is given to the critic of its kind; the trainer scores the generator with
+    :meth:`select` of the current step's kind. With ``critic_rows: window`` it is given the whole
+    window, so both critics step; with ``active`` only the step's fresh block, so only that
+    kind's critic steps. Every rank makes the same call on the same rows (the critics are small,
+    the rows are already on every rank), so the two kinds need not split evenly over ranks and
+    the result does not depend on the world size.
+    """
+
+    per_kind = True
+    KINDS = (True, False)                 # grouped, ungrouped: a fixed order for the collectives
+
+    def __init__(self, critics: dict):
+        self.critics = {bool(k): c for k, c in critics.items()}
+        if set(self.critics) != set(self.KINDS):
+            raise ValueError("PerKindCritic needs a grouped (True) and an ungrouped (False) critic")
+        first = self.critics[True]
+        self.cfg, self.block = first.cfg, first.block
+        self.names, self.image_dims = first.names, first.image_dims
+        self.critic = nn.ModuleDict({_kind_label(k): c.critic for k, c in self.critics.items()})
+
+    @property
+    def conditional(self) -> bool:
+        return self.critics[True].conditional
+
+    @property
+    def updates(self) -> int:
+        return sum(c.updates for c in self.critics.values())
+
+    def generator_active(self, step_idx: int) -> bool:
+        return self.critics[True].generator_active(step_idx)
+
+    def select(self, grouped: bool) -> AdversarialCritic:
+        """The critic that scores a step of this kind."""
+        return self.critics[bool(grouped)]
+
+    def update(self, fake: dict, real: dict, tau: torch.Tensor | None, kinds,
+               active_kind: bool) -> dict:
+        """One step of each critic on the window's blocks of its kind (all ``K`` rows here).
+
+        ``kinds`` holds one bool per block in window order (``schedule.block_kinds``). Logs come
+        per kind (``gan/grouped/...``, ``gan/ungrouped/...``); the plain ``gan/...`` keys are the
+        critic of ``active_kind``, the one that scores the generator this step.
+        """
+        kinds = np.asarray(kinds, dtype=bool)
+        logs, active = {}, {}
+        for kind in self.KINDS:
+            blocks = np.flatnonzero(kinds == kind)
+            if blocks.size == 0:          # every rank sees the same window: skipped everywhere
+                continue
+            rows = (blocks[:, None] * self.block + np.arange(self.block)).reshape(-1)
+
+            def pick(x):
+                return x[torch.as_tensor(rows, device=x.device)]
+            out = self.critics[kind].update({n: pick(v) for n, v in fake.items()},
+                                            {n: pick(v) for n, v in real.items()},
+                                            None if tau is None else pick(tau))
+            label = _kind_label(kind)
+            logs.update({k.replace("gan/", f"gan/{label}/", 1): v for k, v in out.items()})
+            if kind == bool(active_kind):
+                active = out
+        logs.update(active)
+        return logs
+
+    def state_dict(self) -> dict:
+        return {_kind_label(k): c.state_dict() for k, c in self.critics.items()}
+
+    def load_state_dict(self, state: dict) -> None:
+        for k, c in self.critics.items():
+            c.load_state_dict(state[_kind_label(k)])
+
+
 def build_critic(cfg: GANConfig, store, encoder_names, *, joint: bool = True, device="cpu",
-                 dtype: torch.dtype = torch.float32) -> AdversarialCritic:
-    """Assemble the critic over ``store`` for a subset of the training encoders."""
+                 dtype: torch.dtype = torch.float32, block: int | None = None,
+                 per_kind: bool = False):
+    """Assemble the critic over ``store`` for a subset of the training encoders.
+
+    ``block`` is the window stride ``B``, required by ``gan.critic: block`` (one sample is one
+    step's ``B`` fresh rows) and ignored by the row critic. ``per_kind`` (a block critic on a
+    mixed G/U schedule) returns a :class:`PerKindCritic`: two critics, identically initialized.
+    """
     cfg.validate()
+    if cfg.critic == "block" and not block:
+        raise ValueError("gan.critic: block scores a step's fresh rows as one sample; pass "
+                         "block = the window stride B")
+    if per_kind and cfg.critic != "block":
+        raise ValueError("per-kind critics are for the block critic: a row critic sees the same "
+                         "single images on grouped and ungrouped steps")
+    block = int(block) if cfg.critic == "block" else None
     names = list(cfg.encoders) if cfg.encoders else list(encoder_names)
     unknown = [n for n in names if n not in encoder_names]
     if unknown:
@@ -394,12 +563,20 @@ def build_critic(cfg: GANConfig, store, encoder_names, *, joint: bool = True, de
     conditional = bool(cfg.conditional and joint)
     image_stats, text_stats = reference_stats(store, names, cfg.stats_rows, cfg.seed,
                                               with_text=conditional)
-    # A forked, fixed-seed RNG: identical weights (and spectral-norm vectors) on every rank,
-    # and the global stream the rest of the run consumes is left untouched.
-    with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(cfg.seed)
-        critic = FeatureCritic({n: store.dim(n) for n in names}, image_stats,
-                               text_dim=int(store.text.shape[1]) if conditional else 0,
-                               text_stats=text_stats, hidden=cfg.hidden, depth=cfg.depth,
-                               spectral_norm=cfg.spectral_norm)
-    return AdversarialCritic(critic, cfg, device=device, dtype=dtype)
+    def make() -> AdversarialCritic:
+        # A forked, fixed-seed RNG: identical weights (and spectral-norm vectors) on every rank,
+        # and the global stream the rest of the run consumes is left untouched.
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(cfg.seed)
+            critic = FeatureCritic({n: store.dim(n) for n in names}, image_stats,
+                                   text_dim=int(store.text.shape[1]) if conditional else 0,
+                                   text_stats=text_stats, hidden=cfg.hidden, depth=cfg.depth,
+                                   spectral_norm=cfg.spectral_norm,
+                                   block=None if block is None else
+                                   {"width": cfg.block_width, "layers": cfg.block_layers,
+                                    "heads": cfg.block_heads})
+        return AdversarialCritic(critic, cfg, device=device, dtype=dtype, block=block)
+
+    if per_kind:
+        return PerKindCritic({kind: make() for kind in PerKindCritic.KINDS})
+    return make()

@@ -286,6 +286,16 @@ class SlidingWindowSchedule:
         """The window :meth:`next` would return, without advancing."""
         return self._window_at(self.step)
 
+    def block_kinds(self, window: WindowBatch) -> np.ndarray:
+        """One bool per stride-sized block of ``window``, in window order: True = grouped.
+
+        The window slides by the stride, so its ``K/B`` blocks are the active blocks of the last
+        ``K/B`` steps (the block critic's samples). Here every block is of the schedule's one kind.
+        """
+        if self.window_size % self.stride:
+            raise ValueError(f"window K={self.window_size} is not whole blocks of B={self.stride}")
+        return np.full(self.window_size // self.stride, self.group_size > 1)
+
     def next(self) -> WindowBatch:
         """Advance one stride and return the new window (asserting the overlap identity)."""
         batch = self._window_at(self.step)
@@ -398,6 +408,12 @@ class MixedGroupSchedule(SlidingWindowSchedule):
         return WindowBatch(all_ids=batch.all_ids, retained_ids=batch.retained_ids,
                            active_ids=batch.active_ids, step=batch.step, epoch=batch.epoch,
                            active_grouped=bool(self.kinds[segment]))
+
+    def block_kinds(self, window: WindowBatch) -> np.ndarray:
+        """The kind of each of the window's ``K/B`` segments; the last is ``active_grouped``."""
+        first = (self.start_offset + window.step * self.stride) // self.stride
+        n = self.window_size // self.stride
+        return np.array([bool(self.kinds[(first + j) % self.kinds.size]) for j in range(n)])
 
     def new_epoch(self, seed: int | None = None, random_start: bool = True,
                   reverse_probability: float = 0.5) -> int:

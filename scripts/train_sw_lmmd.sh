@@ -99,6 +99,12 @@ g = gan_from_config(cfg)
 if g.enabled:
     print(f"    gan           critic on {','.join(g.encoders or cfg.encoders)} | weight {g.weight} "
           f"({'adaptive' if g.adaptive else 'fixed'}) | {g.loss} | lr {g.lr} | from step {g.g_start_step}")
+    print(f"    gan critic    " + ("row: one logit per image" if g.critic == "row" else
+                                    f"block: one logit per step's {w.stride} fresh rows")
+          + (f" | trained on the {w.size}-row window" if g.critic_rows == "window" else
+             " | trained on the step's fresh rows only")
+          + (" | one critic per step kind" if g.critic == "block" and w.group_by_prompt
+             and str(w.group_pattern).upper() != "G" else ""))
     if m.battery_bf16:
         print("    WARNING       gan with battery_bf16=true: the critic can learn the bf16-vs-fp32 "
               "encoder pipeline gap (see rdm/sw_lmmd/adversarial.py); prefer battery_bf16: false")

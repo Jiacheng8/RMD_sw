@@ -312,11 +312,21 @@ def build_trainer(cfg, device: str = "cuda") -> SWLMMDTrainer:
     if gan.enabled:
         from .adversarial import build_critic
         warn_gan_pipeline(gan, policy)
-        critic = build_critic(gan, store, names, joint=getattr(cfg, "joint", True), device=device)
-        logger.info("[sw_lmmd] GAN critic: heads %s | %.1f M params | weight %g (%s) | %s loss | "
-                    "lr %g | generator term from step %d", critic.names,
-                    sum(p.numel() for p in critic.critic.parameters()) / 1e6, gan.weight,
-                    "adaptive" if gan.adaptive else "fixed", gan.loss, gan.lr, gan.g_start_step)
+        # a block critic on a mixed G/U schedule: one critic per step kind (PerKindCritic)
+        per_kind = gan.critic == "block" and isinstance(schedule, MixedGroupSchedule)
+        critic = build_critic(gan, store, names, joint=getattr(cfg, "joint", True), device=device,
+                              block=window.stride if gan.critic == "block" else None,
+                              per_kind=per_kind)
+        logger.info("[sw_lmmd] GAN critic (%s): heads %s | %.1f M params | weight %g (%s) | %s "
+                    "loss | lr %g | generator term from step %d",
+                    ("row: one logit per image" if critic.block is None else
+                     f"block: one logit per step's {critic.block} fresh rows")
+                    + (f"; trained on the {window.size}-row window" if gan.critic_rows == "window"
+                       else f"; trained on the step's {window.stride} fresh rows only")
+                    + ("; one critic for grouped blocks, one for ungrouped" if per_kind else ""),
+                    critic.names, sum(p.numel() for p in critic.critic.parameters()) / 1e6,
+                    gan.weight, "adaptive" if gan.adaptive else "fixed", gan.loss, gan.lr,
+                    gan.g_start_step)
 
     lr_schedule = lr_schedule_from_config(cfg)
     logger.info("[sw_lmmd] lr %g, schedule %s (warm-up %d, floor %gx, horizon %s steps)",

@@ -1,0 +1,31 @@
+# Experiment 10: SW-LMMD + block GAN critics + ALTERNATING grouped / ungrouped steps ("GU") on
+# 2 x H100, COCO reference only (no GenEval block), K=128 / B=32.
+#
+#   bash scripts/run_machine-new10.sh --root <root>       # env, data, train, eval in one command
+#
+# Identical to experiment 9 (sw_lmmd_train_h100_2gpu_gan_grouped_blockcritic.yaml) except
+# `window.group_pattern: GU`: one grouped step (8 prompts x 4 seeds), then one ungrouped step (32
+# different prompts), repeating. Why: the earlier GU run used ONE row critic for both kinds and
+# lost GenEval and diversity against the plain grouped run. The hypothesis tested here: grouped
+# and ungrouped blocks are different B x L inputs, so they need different GANs. With
+# `gan.critic: block` on a mixed schedule the launcher builds one block critic per kind
+# (rdm.sw_lmmd.adversarial.PerKindCritic): each step's fresh block trains the critic of that
+# step's kind (`critic_rows: active`, inherited), and the same critic scores that step's
+# generator term -- grouped steps only ever meet the grouped critic, ungrouped the ungrouped one.
+#
+# Compare with experiment 9 (grouped only, same critic) and K128 · GAN · grouped (row critic).
+# New log keys: gan/grouped/... and gan/ungrouped/... per critic; the plain gan/... keys are the
+# critic that scored the current step.
+extends: sw_lmmd_train_h100_2gpu_gan_grouped_blockcritic.yaml
+exp_name: sw-lmmd-flux-h100-2gpu-gan-mixGU-blockcritic
+
+# `extends` merges top-level keys only, so the whole block is restated.
+window:
+  size: 128                   # K = 4 blocks of 32 (the force's context)
+  stride: 32                  # B
+  cyclic: true
+  order_seed: 3407
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+  group_by_prompt: true
+  group_pattern: GU           # grouped step, ungrouped step, repeating

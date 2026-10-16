@@ -75,21 +75,32 @@ def build_toy_store(root: str, num_rows: int = 64, seed: int = 3) -> str:
 def build_trainer(store_root: str, *, window: int = 16, stride: int = 4, micro_batch: int = 1,
                   lr: float = 0.0, grad_clip: float = 0.0, seed: int = 0, joint: bool = True,
                   monitor_every: int = 1, model_seed: int = 0, dtype=torch.float64,
-                  gan: dict | None = None, lr_schedule=None):
+                  gan: dict | None = None, lr_schedule=None, pattern: str | None = None,
+                  per_kind: bool | None = None):
     """Assemble a trainer over the toy store; ``lr=0`` keeps parameters fixed for grad checks.
 
     ``gan`` adds the adversarial critic: :class:`rdm.sw_lmmd.GANConfig` overrides on top of a
-    toy-sized head (``hidden=16``) and no warm-up."""
-    from rdm.sw_lmmd import CacheConfig, GANConfig, SWLMMDTrainer, build_critic
+    toy-sized head (``hidden=16``) and no warm-up. ``pattern`` (e.g. "GU", needs a store with
+    ``prompt_ids``) makes the schedule a :class:`MixedGroupSchedule`; ``per_kind`` (default: a
+    block critic on a mixed schedule, as the launcher does) forces the per-kind critics."""
+    from rdm.sw_lmmd import CacheConfig, GANConfig, MixedGroupSchedule, SWLMMDTrainer, build_critic
 
     store = ReferenceFeatureStore(store_root, NAMES)
-    schedule = SlidingWindowSchedule(store.row_order(), window_size=window, stride=stride)
+    if pattern:
+        schedule = MixedGroupSchedule(store.grouping_ids(), pattern, window_size=window,
+                                      stride=stride)
+    else:
+        schedule = SlidingWindowSchedule(store.row_order(), window_size=window, stride=stride)
     generator = ToyGenerator(seed=model_seed, dtype=dtype)
     optimizer = torch.optim.AdamW(generator.model.parameters(), lr=lr)
     critic = None
     if gan is not None:
-        cfg = GANConfig(**{"enabled": True, "hidden": 16, "g_start_step": 0, **gan})
-        critic = build_critic(cfg, store, list(NAMES), joint=joint, device="cpu", dtype=dtype)
+        cfg = GANConfig(**{"enabled": True, "hidden": 16, "g_start_step": 0, "block_width": 16,
+                           "block_heads": 2, "block_layers": 1, **gan})
+        if per_kind is None:
+            per_kind = cfg.critic == "block" and bool(pattern)
+        critic = build_critic(cfg, store, list(NAMES), joint=joint, device="cpu", dtype=dtype,
+                              block=stride if cfg.critic == "block" else None, per_kind=per_kind)
     trainer = SWLMMDTrainer(generator, MockBattery(dtype=dtype), store, schedule, optimizer,
                             encoder_names=list(NAMES), noise_shape=(NOISE_DIM,),
                             micro_batch=micro_batch, grad_clip=grad_clip, kernel_block=8,

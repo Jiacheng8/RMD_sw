@@ -176,6 +176,14 @@ class GANConfig:
     ``adaptive`` it multiplies the raw adversarial loss, whose gradient scale is unrelated to
     the force's ``1/(BK)`` and drifts with the critic -- a value that works early stops working
     later.
+
+    ``critic`` picks what one critic sample is. ``row`` scores every image alone (one logit per
+    row), so it cannot see how the rows of a step relate. ``block`` scores a step's ``B`` fresh
+    rows together as ONE sample (``B x L``), which can see whether the seeds of a prompt agree
+    (:class:`rdm.sw_lmmd.adversarial.FeatureCritic`); ``block_*`` size its Transformer.
+    ``critic_rows`` picks what the critic trains on each step: the whole ``K``-row window (the
+    ``B`` fresh rows plus the cached ones, ``K/B`` blocks) or only the step's ``B`` fresh rows
+    (one block).
     """
 
     enabled: bool = False
@@ -194,10 +202,25 @@ class GANConfig:
     conditional: bool = True              # projection on tau(c); off when ``joint`` is off
     stats_rows: int = 8192                # reference rows that fix the input standardization
     seed: int = 0
+    critic: str = "row"                   # row: one logit per image | block: one per step's B rows
+    critic_rows: str = "window"           # what trains the critic: window = all K rows (the B
+                                          # fresh + the cached ones) | active = the B fresh only
+    block_width: int = 256                # block critic: token width
+    block_layers: int = 2                 # block critic: Transformer encoder layers
+    block_heads: int = 4                  # block critic: attention heads (divide block_width)
 
     def validate(self) -> None:
         if self.loss not in ("hinge", "ns"):
             raise ValueError(f"gan.loss must be 'hinge' or 'ns', got {self.loss!r}")
+        if self.critic not in ("row", "block"):
+            raise ValueError(f"gan.critic must be 'row' or 'block', got {self.critic!r}")
+        if self.critic_rows not in ("window", "active"):
+            raise ValueError(f"gan.critic_rows must be 'window' or 'active', got "
+                             f"{self.critic_rows!r}")
+        if min(self.block_width, self.block_layers, self.block_heads) <= 0 or \
+                self.block_width % self.block_heads:
+            raise ValueError("gan.block_width, block_layers and block_heads must be positive, "
+                             "and block_heads must divide block_width")
         if self.weight < 0 or self.lr < 0 or self.r1_gamma < 0:
             raise ValueError("gan.weight, gan.lr and gan.r1_gamma must be non-negative")
         if self.hidden <= 0 or self.depth <= 0 or self.stats_rows <= 1:

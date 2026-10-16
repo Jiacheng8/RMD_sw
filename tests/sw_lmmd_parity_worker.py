@@ -27,6 +27,12 @@ def main() -> int:
     ap.add_argument("--window", type=int, default=16)
     ap.add_argument("--stride", type=int, default=8)
     ap.add_argument("--gan", action="store_true", help="add the adversarial critic")
+    ap.add_argument("--gan-critic", default="row", choices=["row", "block"],
+                    help="with --gan: one logit per row, or per step's block of B rows")
+    ap.add_argument("--gan-critic-rows", default="window", choices=["window", "active"],
+                    help="with --gan: train the critic on the window or the fresh rows only")
+    ap.add_argument("--pattern", default=None,
+                    help="mixed G/U schedule (needs a store with prompt_ids), e.g. GU")
     args = ap.parse_args()
 
     world = int(os.environ.get("WORLD_SIZE", "1"))
@@ -41,7 +47,9 @@ def main() -> int:
     # critic that has already taken a step -- its weights must agree across world sizes too.
     trainer = build_trainer(args.store, window=args.window, stride=args.stride,
                             micro_batch=args.micro_batch, lr=0.0, grad_clip=0.0,
-                            gan={"weight": 0.5} if args.gan else None)
+                            gan={"weight": 0.5, "critic": args.gan_critic,
+                                 "critic_rows": args.gan_critic_rows} if args.gan else None,
+                            pattern=args.pattern)
     trainer.bootstrap()
     logs = {}
     for _ in range(args.steps):
