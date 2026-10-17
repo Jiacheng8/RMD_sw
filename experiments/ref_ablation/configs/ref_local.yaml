@@ -1,0 +1,13 @@
+# One of the three reference-side ablation configs (local / random / global): identical except
+# for ref_ablation.ref_mode. Launch with bash experiments/ref_ablation/run.sh <mode> <seed>.
+extends: ref_ablation_base.yaml
+
+ref_ablation:
+  ref_mode: local
+  ref_seed: 0                     # random mode's row sampler; run.sh sets it to the run's seed
+  nystrom_dir: /data/thor/jiacheng/rdm-sets/sw_lmmd/ref_ablation/nystrom_m4096   # needed by global;
+                                  # elsewhere it only adds the ref/<enc>/attraction_global log
+  pre_diagnostic: true            # before step 1: local / random / global attraction, one window
+  diagnostic_random_draws: 8      # random draws averaged in that diagnostic
+  diagnostic_exact_global: true   # + the exact mean over all N rows next to the Nystrom value
+  grad_norms: true                # per-encoder |grad| of attraction / repulsion every step
