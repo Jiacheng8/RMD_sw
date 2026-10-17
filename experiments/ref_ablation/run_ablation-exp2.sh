@@ -5,9 +5,9 @@
 # every row once -- instead of the window's own 128 rows. The landmarks were built from our store with
 # its sigma and beta, and are downloaded (checksummed) from the private HF dataset
 # jiachengcui888/sw-rdm-reference-store (ref_ablation/nystrom_m4096).
-# Everything else is "K128 · GAN · grouped" (configs/sw_lmmd_train_h100_2gpu_gan_grouped.yaml):
-# K=128 / B=32, prompt-grouped windows (8 prompts x 4 seeds fresh per step), the per-image GAN critic
-# at adaptive weight 1.5, COCO reference only, cosine lr, 2000 steps, seed 0.
+# Everything else is "K128 · GAN" (configs/sw_lmmd_train_h100_2gpu_gan.yaml): K=128 / B=32,
+# UNGROUPED windows (each step's 32 fresh rows are 32 different prompts), the per-image GAN critic
+# at adaptive weight 1.5, COCO reference only, cosine lr, 2000 steps, seed 0 (micro_batch 4, memory only).
 #
 # It is scripts/new_machine.sh for the conda env, the downloads (models and the COCO store), the Qwen3
 # context and the GenEval scorer; then the landmark bundles, a 10-step check, training, and GenEval +
@@ -30,8 +30,9 @@
 # --resume / --allow-low-disk / --dry-run, and new_machine.sh's --skip-env --skip-download
 # --skip-preprocess --skip-geneval: see experiments/ref_ablation/_run_ablation.sh.
 #
-# Run dir: <root>/sw_lmmd/work_dirs/sw-lmmd-refabl-k128b32-gan-grouped-global-s0. Compare with
-# exp 1 (random) and K128 · GAN · grouped (GenEval 0.7915 at step 2000, DreamSim diversity 0.249).
+# Run dir: <root>/sw_lmmd/work_dirs/sw-lmmd-refabl-k128b32-gan-global-s0. Compare with
+# exp 1 (random) and K128 · GAN, the same setting with the window's own references (GenEval 0.8271
+# at step 2000, best 0.8302 at 1600; DreamSim diversity 0.097 = 0.42x the teacher).
 set -euo pipefail
 exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_run_ablation.sh" "${BASH_SOURCE[0]}" global \
-  "ablation exp 2: GLOBAL (all-reference Nystrom) attraction, K=128 / B=32, grouped + per-image GAN, COCO reference" "$@"
+  "ablation exp 2: GLOBAL (all-reference Nystrom) attraction, K=128 / B=32, ungrouped + per-image GAN, COCO reference" "$@"

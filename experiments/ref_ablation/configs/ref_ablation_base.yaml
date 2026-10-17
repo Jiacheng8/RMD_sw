@@ -2,15 +2,27 @@
 #
 #   bash experiments/ref_ablation/run.sh <local|random|global> <seed>      # one run (2 x H100)
 #
-# Base: "K128 · GAN · grouped" (configs/sw_lmmd_train_h100_2gpu_gan_grouped.yaml), unchanged --
-# window K=128 / B=32 with prompt-grouped rows (8 prompts x 4 seeds fresh per step), the row GAN
-# critic at adaptive weight 1.5, fp32 encoder battery, micro_batch 4, lr 2.83e-6 with a 100-step
-# warm-up then cosine to 0.1x, 2000 steps, encoders dinov3_l / siglip2 / aimv2_huge, seed 0, COCO
-# reference only (no reference_extension).
+# Base: "K128 · GAN" (configs/sw_lmmd_train_h100_2gpu_gan.yaml) -- UNGROUPED windows (a row-level
+# permutation: each step's 32 fresh rows are 32 different prompts), the per-image (row) GAN critic
+# at adaptive weight 1.5 trained on the 128-row window, fp32 encoder battery, lr 2.83e-6 with a
+# 100-step warm-up then cosine to 0.1x, 2000 steps, encoders dinov3_l / siglip2 / aimv2_huge,
+# seed 0, COCO reference only (no reference_extension). One change, memory only: micro_batch 4
+# instead of 8, as experiment 11 did (the one-command launchers split B into micro-batches of 4;
+# micro-batching does not change the gradient, tests/test_sw_lmmd_adversarial.py).
 #
 # ref_local.yaml / ref_random.yaml / ref_global.yaml extend this file and differ in
 # `ref_ablation.ref_mode` alone. Only the attraction's reference side changes: the repulsion, the
 # window, the cache, the monitored mmd2 and the GAN critic (which keeps training on the window's
 # own reference rows) are the same in all three.
-extends: ../../../configs/sw_lmmd_train_h100_2gpu_gan_grouped.yaml
-exp_name: sw-lmmd-refabl-k128b32-gan-grouped   # run dir: <exp_name>-<ref_mode>-s<seed>
+extends: ../../../configs/sw_lmmd_train_h100_2gpu_gan.yaml
+exp_name: sw-lmmd-refabl-k128b32-gan   # run dir: <exp_name>-<ref_mode>-s<seed>
+
+# `extends` merges top-level keys only, so the whole block is restated (micro_batch 8 -> 4).
+memory:
+  shard: none
+  grad_reduce: mean
+  optimizer: adamw8bit
+  param_dtype: fp32
+  battery_bf16: false         # the critic needs the store's encoder pipeline
+  micro_batch: 4
+  encoder_offload: false

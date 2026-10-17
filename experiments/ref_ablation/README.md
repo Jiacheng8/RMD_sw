@@ -10,7 +10,7 @@
 | `random` | `(1/K) Σ_{j∈R_t} k(x_i, y_j)` | 每步从全部 N 行里无放回均匀抽 K 行，与窗口无关；每行用它**自己的 caption** 拼文本特征 |
 | `global` | `ψ(x_i)ᵀ μ̄` | Nyström：m=4096 个 k-means landmark，`ψ(x)=K_mm^{-1/2} k(L,x)`，`μ̄=(1/N)Σ_n ψ(y_n)` 在全部 N 行上算一次后固定 |
 
-基础配置是 `configs/sw_lmmd_train_h100_2gpu_gan_grouped.yaml`（K128 · GAN · grouped），只用 COCO 参考，原样沿用：K=128、B=32（每步 8 个 prompt × 4 个 seed）、row critic（自适应权重 1.5）、fp32 battery、micro 4、lr 2.83e-6（预热 100 步后余弦降到 0.1×）、2000 步、编码器 dinov3_l / siglip2 / aimv2_huge。
+基础配置是 `configs/sw_lmmd_train_h100_2gpu_gan.yaml`（K128 · GAN，**不分组**），只用 COCO 参考，原样沿用：K=128、B=32（不分组：每步 32 张新图来自 32 个不同的 prompt）、row critic（自适应权重 1.5）、fp32 battery、micro 4、lr 2.83e-6（预热 100 步后余弦降到 0.1×）、2000 步、编码器 dinov3_l / siglip2 / aimv2_huge。
 
 ## 文件
 
@@ -67,7 +67,7 @@ REFERENCE_ROOT=... OUTPUT_DIR=... NYSTROM_DIR=... bash experiments/ref_ablation/
 ```
 
 - 种子同时设置 `seed`（每行的生成噪声、torch 全局种子）和 `ref_ablation.ref_seed`（random 抽样器）。窗口顺序 `window.order_seed` 固定为 3407，所以同一种子下三种模式看到的窗口和噪声完全相同。想让窗口顺序也随种子变，设 `ORDER_SEED`。
-- 运行目录：`<output_dir>/sw-lmmd-refabl-k128b32-gan-grouped-<mode>-s<seed>/`。
+- 运行目录：`<output_dir>/sw-lmmd-refabl-k128b32-gan-<mode>-s<seed>/`。
 - landmark 文件约 0.5 GB，可以复制到 H100 机器（用 `NYSTROM_DIR` 指过去），也可以在那边重新构建。加载时会校验参考库指纹：参考库不同就报错，不会用错。
 
 ## 日志

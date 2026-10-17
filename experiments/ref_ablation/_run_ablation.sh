@@ -38,7 +38,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 B=32; MICRO=4; STEPS=2000; SAVE_FREQ=200
 CONFIG_REL="experiments/ref_ablation/configs/ref_${MODE}.yaml"
-RUN_PREFIX="sw-lmmd-refabl-k128b32-gan-grouped"        # exp_name in configs/ref_ablation_base.yaml
+RUN_PREFIX="sw-lmmd-refabl-k128b32-gan"        # exp_name in configs/ref_ablation_base.yaml
 HF_DATASET="jiachengcui888/sw-rdm-reference-store"
 ENV_NAME="${CONDA_ENV:-rdm}"
 
@@ -148,7 +148,7 @@ if (( RESUME )) || (( CHECK_STEPS == 0 )) || [[ -f "$RUN_DIR/step_$(printf '%07d
 else
   say "3 check: $CHECK_STEPS real-model steps -> $CHECK_DIR (no checkpoints kept)"
   CHECK=(bash "$HERE/run.sh" "$MODE" "$SEED" --gpus "$GPUS" --steps "$CHECK_STEPS"
-         --set "save_final=false" --set "save_resume=false")
+         --set "save_final=false" --set "save_resume=false" --set "exp_name=CHECK-not-the-run")
   if (( DRY )); then
     env "${RUN_ENV[@]}" OUTPUT_DIR="$CHECK_DIR" "${CHECK[@]}" --dry-run
   else
