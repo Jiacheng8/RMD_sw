@@ -67,7 +67,7 @@ REFERENCE_ROOT=... OUTPUT_DIR=... NYSTROM_DIR=... bash experiments/ref_ablation/
 ```
 
 - 种子同时设置 `seed`（每行的生成噪声、torch 全局种子）和 `ref_ablation.ref_seed`（random 抽样器）。窗口顺序 `window.order_seed` 固定为 3407，所以同一种子下三种模式看到的窗口和噪声完全相同。想让窗口顺序也随种子变，设 `ORDER_SEED`。
-- 运行目录：`<output_dir>/sw-lmmd-refabl-k128b32-gan-<mode>-s<seed>/`。
+- 运行目录：`<output_dir>/<mode>-ungrouped/`，例如 `global-ungrouped`；seed 0 以外的种子会加 `-s<seed>`，比如 `global-ungrouped-s1`。
 - landmark 文件约 0.5 GB，可以复制到 H100 机器（用 `NYSTROM_DIR` 指过去），也可以在那边重新构建。加载时会校验参考库指纹：参考库不同就报错，不会用错。
 
 ## 日志

@@ -503,7 +503,7 @@ def test_F_train_loop_runs_and_resumes_exactly(grouped_store, toy_nystrom, tmp_p
                                                ref_mode="random", ref_seed=3, nystrom=toy_nystrom)
 
     straight = train(_loop_cfg(str(tmp_path / "a"), 5), device="cpu", trainer=trainer())
-    run_dir = tmp_path / "a" / "toy-random-s0"
+    run_dir = tmp_path / "a" / "random-toy"
     records = [json.loads(line) for line in open(run_dir / "train_log.jsonl")]
     assert "pre_diagnostic" in records[0]
     diag = records[0]["pre_diagnostic"]["encoders"]["enc_a"]
@@ -516,7 +516,7 @@ def test_F_train_loop_runs_and_resumes_exactly(grouped_store, toy_nystrom, tmp_p
 
     first = train(_loop_cfg(str(tmp_path / "b"), 3), device="cpu", trainer=trainer())
     resumed = train(_loop_cfg(str(tmp_path / "b"), 5, resume_from=str(
-        tmp_path / "b" / "toy-random-s0" / "resume.pth")), device="cpu", trainer=trainer())
+        tmp_path / "b" / "random-toy" / "resume.pth")), device="cpu", trainer=trainer())
     assert first.step_idx == 3 and resumed.step_idx == 5
     for p, q in zip(straight._gen_params, resumed._gen_params):
         assert torch.equal(p, q)

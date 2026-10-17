@@ -27,7 +27,7 @@
 # --resume / --allow-low-disk / --dry-run, and new_machine.sh's --skip-env --skip-download
 # --skip-preprocess --skip-geneval: see experiments/ref_ablation/_run_ablation.sh.
 #
-# Run dir: <root>/sw_lmmd/work_dirs/sw-lmmd-refabl-k128b32-gan-random-s0. Compare with
+# Run dir: <root>/sw_lmmd/work_dirs/random-ungrouped (seed 0; other seeds add -s<seed>). Compare with
 # exp 2 (global) and K128 · GAN, the same setting with the window's own references (GenEval 0.8271
 # at step 2000, best 0.8302 at 1600; DreamSim diversity 0.097 = 0.42x the teacher).
 set -euo pipefail

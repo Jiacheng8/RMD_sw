@@ -12,7 +12,7 @@
 # (the random mode's row sampler). The window order stays `window.order_seed` = 3407 for every
 # mode and seed unless ORDER_SEED is set, so the three modes of one seed see the same windows and
 # the same noise and differ only in the attraction's reference side. Run directory:
-# <output_dir>/sw-lmmd-refabl-k128b32-gan-<mode>-s<seed>.
+# <output_dir>/<mode>-ungrouped (e.g. global-ungrouped; -s<seed> for seeds other than 0).
 #
 # Environment, as scripts/train_sw_lmmd.sh: GPUS (default 2; B=32 must split into micro-batches
 # of memory.micro_batch=4 per rank), REFERENCE_ROOT, OUTPUT_DIR, NYSTROM_DIR (the landmark

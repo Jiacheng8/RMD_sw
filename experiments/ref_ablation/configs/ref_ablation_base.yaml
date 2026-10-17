@@ -15,7 +15,7 @@
 # window, the cache, the monitored mmd2 and the GAN critic (which keeps training on the window's
 # own reference rows) are the same in all three.
 extends: ../../../configs/sw_lmmd_train_h100_2gpu_gan.yaml
-exp_name: sw-lmmd-refabl-k128b32-gan   # run dir: <exp_name>-<ref_mode>-s<seed>
+exp_name: ungrouped   # run dir: <ref_mode>-<exp_name>, e.g. global-ungrouped (-s<seed> for seed != 0)
 
 # `extends` merges top-level keys only, so the whole block is restated (micro_batch 8 -> 4).
 memory:

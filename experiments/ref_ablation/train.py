@@ -10,7 +10,8 @@ marked ``# [ref-ablation]``:
 * the trainer is the one :func:`rdm.sw_lmmd.launch.build_trainer` builds -- unchanged generator,
   battery, store, window, optimizer, critic, lr schedule -- turned into a
   :class:`~experiments.ref_ablation.trainer.RefAblationTrainer`;
-* the run directory is ``<exp_name>-<ref_mode>-s<seed>`` so modes and seeds never share one;
+* the run directory is ``<ref_mode>-<exp_name>`` (``global-ungrouped``), ``-s<seed>`` added for
+  seeds other than 0, so modes and seeds never share one;
 * before the first step, :meth:`RefAblationTrainer.attraction_diagnostic` prints the three
   attractions on the same window under the same weights (``pre_diagnostic.json``);
 * the console prints one line per encoder; the log carries the peak GPU memory of each step;
@@ -36,9 +37,11 @@ logger = logging.getLogger("rdm")
 
 
 def run_name(cfg, ref) -> str:
-    """``<exp_name>-<ref_mode>-s<seed>`` (+ ``-o<order_seed>`` when the window order is not the
-    configs' default 3407)."""
-    name = f"{getattr(cfg, 'exp_name', 'sw-lmmd')}-{ref.ref_mode}-s{int(getattr(cfg, 'seed', 0))}"
+    """``<ref_mode>-<exp_name>`` -- ``global-ungrouped`` for the ablation configs at seed 0 -- plus
+    ``-s<seed>`` for any other seed and ``-o<order_seed>`` when the window order is not the configs'
+    default 3407."""
+    seed = int(getattr(cfg, "seed", 0))
+    name = f"{ref.ref_mode}-{getattr(cfg, 'exp_name', 'sw-lmmd')}" + (f"-s{seed}" if seed else "")
     order_seed = int(dict(getattr(cfg, "window", None) or {}).get("order_seed", 3407))
     return name if order_seed == 3407 else f"{name}-o{order_seed}"
 

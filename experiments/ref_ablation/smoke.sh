@@ -82,7 +82,7 @@ out, runs = sys.argv[1], sys.argv[2:]
 print(f"\n{'run':<10}{'rc':>4}{'steps':>7}{'s/step (2..N)':>15}{'torch peak GB':>15}   nvidia-smi peak above pre-run, MiB per GPU")
 for run in runs:
     rc = open(os.path.join(out, f"{run}.rc")).read().strip() if os.path.exists(os.path.join(out, f"{run}.rc")) else "?"
-    logs = sorted(glob.glob(os.path.join(out, "smoke-baseline" if run == "baseline" else f"smoke-{run}-*", "train_log.jsonl")))
+    logs = sorted(glob.glob(os.path.join(out, "smoke-baseline" if run == "baseline" else f"{run}-smoke*", "train_log.jsonl")))
     steps = []
     if logs:
         steps = [r for r in map(json.loads, open(logs[-1])) if "step" in r and "seconds" in r]

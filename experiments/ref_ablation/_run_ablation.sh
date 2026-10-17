@@ -38,7 +38,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 B=32; MICRO=4; STEPS=2000; SAVE_FREQ=200
 CONFIG_REL="experiments/ref_ablation/configs/ref_${MODE}.yaml"
-RUN_PREFIX="sw-lmmd-refabl-k128b32-gan"        # exp_name in configs/ref_ablation_base.yaml
 HF_DATASET="jiachengcui888/sw-rdm-reference-store"
 ENV_NAME="${CONDA_ENV:-rdm}"
 
@@ -67,7 +66,10 @@ SW="$ROOT/sw_lmmd"
 STORE="$SW/reference_store"
 NYS="$SW/ref_ablation/nystrom_m4096"
 OUT="$SW/work_dirs"
-RUN_DIR="$OUT/$RUN_PREFIX-$MODE-s$SEED"
+# <ref_mode>-<exp_name> (exp_name "ungrouped" in configs/ref_ablation_base.yaml), -s<seed> unless
+# seed 0 -- the name experiments/ref_ablation/train.py:run_name gives the run
+RUN_DIR="$OUT/$MODE-ungrouped"
+[[ "$SEED" != 0 ]] && RUN_DIR="$RUN_DIR-s$SEED"
 CHECK_DIR="$SW/ref_ablation/check_${MODE}_s$SEED"
 # This machine's HF token (needed for the private dataset), as new_machine.sh reads it.
 if [[ -z "${HF_TOKEN:-}" && -s "$REPO/.hf_token" ]]; then
