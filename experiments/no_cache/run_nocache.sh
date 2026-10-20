@@ -13,11 +13,11 @@
 #
 # Stages, all re-runnable:
 #   1 setup   scripts/new_machine.sh --no-train: conda env, downloads (models + COCO store),
-#             the Qwen3 context, and (unless --no-eval) the GenEval scorer
+#             the Qwen3 context, and (with --eval) the GenEval scorer
 #   2 check   10 real-model steps in a scratch dir: memory and seconds per step
 #   3 train   torchrun -m experiments.no_cache.train, `steps` steps (cosine lr over all of them),
 #             10 checkpoints (save_freq = steps / 10)
-#   4 eval    scripts/eval_run.sh: GenEval + PickScore + seed diversity on every checkpoint
+#   4 eval    only with --eval: scripts/eval_run.sh (GenEval + PickScore + seed diversity)
 #
 # --root DIR     data root (default /root/rdm-sets); ~315 GB free
 # --gpus N       training GPUs (default: every visible card, rounded down to 1/2/4/8); 80 GB cards
@@ -27,7 +27,8 @@
 # --match-hours H  pick --steps automatically: stage 2 measures s/step and sets
 #                N = H x 3600 / (s per step), rounded down to a multiple of 10. The choice is saved
 #                in <root>/sw_lmmd/no_cache_steps.txt so --resume finds the same run.
-# --no-eval      train only (evaluate later, e.g. on the 4090s)
+# --eval         also evaluate every checkpoint when training ends (default: train only --
+#                evaluate later on the 4090s; --no-eval is accepted and is the default)
 # --resume       continue the stopped run from its resume.pth (skips stages 1-2)
 # --dry-run      print the plan, change nothing
 set -euo pipefail
@@ -36,7 +37,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 CONFIG_REL="experiments/no_cache/configs/nocache_k128_b128.yaml"
 B=128; MICRO=4
-ROOT="/root/rdm-sets"; GPUS=""; STEPS=2000; EVAL=1; RESUME=0; DRY=0; MATCH_HOURS=
+ROOT="/root/rdm-sets"; GPUS=""; STEPS=2000; EVAL=0; RESUME=0; DRY=0; MATCH_HOURS=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root)    ROOT="$2"; shift 2 ;;
@@ -44,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --steps)   STEPS="$2"; shift 2 ;;
     --match-hours) MATCH_HOURS="$2"; shift 2 ;;
     --no-eval) EVAL=0; shift ;;
+    --eval)    EVAL=1; shift ;;
     --resume)  RESUME=1; shift ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
