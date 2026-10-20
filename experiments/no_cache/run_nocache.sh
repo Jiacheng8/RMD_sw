@@ -12,8 +12,10 @@
 #   bash experiments/no_cache/run_nocache.sh --resume     # continue after an interruption
 #
 # Stages, all re-runnable:
-#   1 setup   scripts/new_machine.sh --no-train: conda env, downloads (models + COCO store),
-#             the Qwen3 context, and (with --eval) the GenEval scorer
+#   1 setup   conda env, downloads, the Qwen3 context (via scripts/new_machine.sh --no-train).
+#             Without --eval nothing evaluation-only is installed: no GenEval scorer env, no
+#             PickScore weights -- only the three training encoders, FLUX.2, the flux2 source and
+#             the COCO store are downloaded
 #   2 check   10 real-model steps in a scratch dir: memory and seconds per step
 #   3 train   torchrun -m experiments.no_cache.train, `steps` steps (cosine lr over all of them),
 #             10 checkpoints (save_freq = steps / 10)
@@ -107,12 +109,46 @@ train_cmd() {   # <output dir> <steps> <save_freq> [--set ...]
 if (( RESUME )); then
   say "1 setup: skipped (--resume)"
 else
-  say "1 setup: scripts/new_machine.sh --no-train"
   NM=(bash "$REPO/scripts/new_machine.sh" --root "$ROOT" --config "$CONFIG_REL" --gpus "$GPUS"
       --env "$ENV_NAME" --no-train)
-  (( EVAL )) || NM+=(--skip-geneval)
   (( DRY )) && NM+=(--dry-run)
-  "${NM[@]}"
+  if (( EVAL )); then
+    say "1 setup: scripts/new_machine.sh --no-train (with the GenEval scorer and PickScore)"
+    "${NM[@]}"
+  else
+    # Training only: nothing evaluation-only is installed or downloaded -- no GenEval scorer env
+    # (stage 4 of new_machine.sh), no PickScore weights (3.9 GB, in download_all.sh --minimal).
+    # new_machine.sh is reused for the env and the context; only the downloads are done here,
+    # with the training groups alone (the three training encoders, FLUX.2, flux2 source, store).
+    say "1a setup: conda env (scripts/new_machine.sh, downloads/context/GenEval skipped)"
+    "${NM[@]}" --skip-download --skip-preprocess --skip-geneval
+    say "1b downloads for training only (no PickScore, no GenEval scorer)"
+    FETCH=(conda run -n "$ENV_NAME" --no-capture-output python -u "$REPO/scripts/fetch_prerequisites.py"
+           --root "$ROOT" --group encoders --group flux --group flux2src
+           --encoders "${MINIMAL_ENCODERS:-dinov3_l,siglip2,aimv2_huge}")
+    STORE_DL=(env CONDA_ENV="$ENV_NAME" bash "$REPO/scripts/download_all.sh" --root "$ROOT"
+              --env "$ENV_NAME" --sw-lmmd-store-only)
+    if (( DRY )); then
+      FETCH+=(--dry-run); STORE_DL+=(--dry-run)
+    fi
+    "${FETCH[@]}" || die "downloads incomplete (see above); re-run"
+    "${STORE_DL[@]}" || die "reference store download incomplete (see above); re-run"
+    if ! (( DRY )); then
+      # the model-revision check of new_machine.sh, minus the evaluation-only PickScore repos
+      REV="$ROOT/.hf_revisions_train_only.json"
+      python3 - "$REPO/assets/hf_revisions.json" "$REV" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+json.dump({k: v for k, v in d.items() if k not in ("yuvalkirstain/PickScore_v1",
+          "laion/CLIP-ViT-H-14-laion2B-s32B-b79K")}, open(sys.argv[2], "w"), indent=1)
+PY
+      ( source "$ROOT/env.sh" && conda run -n "$ENV_NAME" --no-capture-output \
+          python "$REPO/scripts/check_hf_revisions.py" --check "$REV" ) \
+        || die "a training model on the Hub changed or did not download (see above)"
+    fi
+    say "1c Qwen3 context for the store (scripts/new_machine.sh)"
+    "${NM[@]}" --skip-env --skip-download --skip-geneval
+  fi
 fi
 [[ -f "$ROOT/env.sh" ]] && source "$ROOT/env.sh"
 if (( DRY )); then
