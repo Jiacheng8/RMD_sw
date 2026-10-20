@@ -8,7 +8,7 @@
 #   tmux new -s nocache
 #   bash experiments/no_cache/run_nocache.sh --dry-run    # plan only, changes nothing
 #   bash experiments/no_cache/run_nocache.sh              # same STEPS as K128 · GAN (2000)
-#   bash experiments/no_cache/run_nocache.sh --steps 500  # same GPU TIME as K128 · GAN (~2 h)
+#   bash experiments/no_cache/run_nocache.sh --match-hours 2   # same GPU TIME as K128 · GAN
 #   bash experiments/no_cache/run_nocache.sh --resume     # continue after an interruption
 #
 # Stages, all re-runnable:
@@ -24,6 +24,9 @@
 # --steps N      training steps (default 2000). The lr schedule and the 10 checkpoints follow N.
 #                For the same-GPU-time comparison pick N from stage 2's seconds per step:
 #                N = 2 h / (s per step); K128 · GAN does 2000 steps in ~2 h (3.6 s/step).
+# --match-hours H  pick --steps automatically: stage 2 measures s/step and sets
+#                N = H x 3600 / (s per step), rounded down to a multiple of 10. The choice is saved
+#                in <root>/sw_lmmd/no_cache_steps.txt so --resume finds the same run.
 # --no-eval      train only (evaluate later, e.g. on the 4090s)
 # --resume       continue the stopped run from its resume.pth (skips stages 1-2)
 # --dry-run      print the plan, change nothing
@@ -33,12 +36,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 CONFIG_REL="experiments/no_cache/configs/nocache_k128_b128.yaml"
 B=128; MICRO=4
-ROOT="/root/rdm-sets"; GPUS=""; STEPS=2000; EVAL=1; RESUME=0; DRY=0
+ROOT="/root/rdm-sets"; GPUS=""; STEPS=2000; EVAL=1; RESUME=0; DRY=0; MATCH_HOURS=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root)    ROOT="$2"; shift 2 ;;
     --gpus)    GPUS="$2"; shift 2 ;;
     --steps)   STEPS="$2"; shift 2 ;;
+    --match-hours) MATCH_HOURS="$2"; shift 2 ;;
     --no-eval) EVAL=0; shift ;;
     --resume)  RESUME=1; shift ;;
     --dry-run) DRY=1; shift ;;
@@ -47,11 +51,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "$STEPS" =~ ^[0-9]+$ && "$STEPS" -ge 10 ]] || { echo "--steps must be an integer >= 10" >&2; exit 2; }
-SAVE_FREQ=$(( STEPS / 10 ))
 ROOT="$(realpath -m "$ROOT")"
-SW="$ROOT/sw_lmmd"; STORE="$SW/reference_store"; OUT="$SW/work_dirs"
-EXP="nocache-k128b128"; [[ "$STEPS" != 2000 ]] && EXP="$EXP-s$STEPS"
-RUN_DIR="$OUT/$EXP"; CHECK_DIR="$SW/no_cache_check"
+SW="$ROOT/sw_lmmd"; STORE="$SW/reference_store"; OUT="$SW/work_dirs"; CHECK_DIR="$SW/no_cache_check"
+STEPS_FILE="$SW/no_cache_steps.txt"
+if [[ -n "$MATCH_HOURS" ]] && (( RESUME )); then
+  [[ -s "$STEPS_FILE" ]] || { echo "--resume --match-hours: $STEPS_FILE missing; pass --steps N" >&2; exit 2; }
+  STEPS="$(cat "$STEPS_FILE")"
+fi
+set_run() {     # derived from STEPS
+  SAVE_FREQ=$(( STEPS / 10 ))
+  EXP="nocache-k128b128"; [[ "$STEPS" != 2000 ]] && EXP="$EXP-s$STEPS"
+  RUN_DIR="$OUT/$EXP"
+}
+set_run
 ENV_NAME="${CONDA_ENV:-rdm}"
 if [[ -z "${HF_TOKEN:-}" && -s "$REPO/.hf_token" ]]; then
   HF_TOKEN="$(tr -d '[:space:]' < "$REPO/.hf_token")"; export HF_TOKEN
@@ -75,7 +87,11 @@ say "no-cache control: K = B = 128, $STEPS steps"
 info "config    $CONFIG_REL"
 info "root      $ROOT"
 info "gpus      $GPUS (grad_accum $(( B / (GPUS * MICRO) )))$( (( EVAL )) && echo ', eval on all visible GPUs' || echo ', no evaluation')"
-info "run dir   $RUN_DIR (checkpoints every $SAVE_FREQ steps)"
+if [[ -n "$MATCH_HOURS" ]] && ! (( RESUME )); then
+  info "steps     chosen after the 10-step check: ${MATCH_HOURS} h of training at the measured s/step"
+else
+  info "run dir   $RUN_DIR (checkpoints every $SAVE_FREQ steps)"
+fi
 
 train_cmd() {   # <output dir> <steps> <save_freq> [--set ...]
   local out="$1" steps="$2" freq="$3"; shift 3
@@ -103,20 +119,27 @@ if (( DRY )); then
 fi
 
 # ---- 2 check -----------------------------------------------------------------------------------
-if (( RESUME )) || [[ -s "$RUN_DIR/train_log.jsonl" ]]; then
+if (( RESUME )) || { [[ -z "$MATCH_HOURS" ]] && [[ -s "$RUN_DIR/train_log.jsonl" ]]; }; then
   say "2 check: skipped"
 else
   say "2 check: 10 real-model steps -> $CHECK_DIR (deleted afterwards)"
   rm -rf "$CHECK_DIR"
   train_cmd "$CHECK_DIR" 10 1000 --set "save_resume=false" || die "the 10-step check failed (log above)"
-  conda run -n "$ENV_NAME" --no-capture-output python - "$CHECK_DIR/$EXP/train_log.jsonl" <<'PY'
+  SPS=$(conda run -n "$ENV_NAME" --no-capture-output python - "$CHECK_DIR/$EXP/train_log.jsonl" <<'PY' | tail -1
 import json, sys, statistics
 rows = [json.loads(l) for l in open(sys.argv[1])]
-s = statistics.median(r["seconds"] for r in rows[2:]) if len(rows) > 3 else rows[-1]["seconds"]
-print(f"    {s:.1f} s per step -> 2000 steps ~ {2000 * s / 3600:.1f} h; same GPU time as K128 · GAN "
-      f"(2000 x 3.6 s = 2.0 h): --steps {int(7200 / s)}")
+print(statistics.median(r["seconds"] for r in rows[2:]) if len(rows) > 3 else rows[-1]["seconds"])
 PY
+)
+  info "$(printf '%.1f' "$SPS") s per step (K128 · GAN: 3.6 s) -> 2000 steps ~ $(python3 -c "print(round(2000*$SPS/3600,1))") h"
   rm -rf "$CHECK_DIR"
+  if [[ -n "$MATCH_HOURS" ]]; then
+    STEPS=$(python3 -c "print(int($MATCH_HOURS*3600/$SPS)//10*10)")
+    (( STEPS >= 10 )) || die "only $STEPS steps fit in $MATCH_HOURS h"
+    echo "$STEPS" > "$STEPS_FILE"
+    set_run
+    info "--match-hours $MATCH_HOURS -> $STEPS steps, checkpoints every $SAVE_FREQ, run dir $RUN_DIR"
+  fi
 fi
 
 # ---- 3 train -----------------------------------------------------------------------------------
