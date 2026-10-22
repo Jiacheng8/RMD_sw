@@ -9,10 +9,12 @@
 #   force_norm_window 128: the force keeps K128 · GAN's 2 / (B x 128) normalization instead of
 #     2 / (B K) = 2 / (32 x 32), i.e. it is multiplied by K / 128 = 1/4 (experiments/no_cache/train.py).
 #   probe_every 0, cache.refresh_every_windows 0, cache.drift_threshold 0: nothing to probe/refresh.
+#   memory.micro_batch 8 -> 4: micro_batch 8 ran out of memory in the encoder forward on 80 GB
+#     H100s (memory only, gradient unchanged; grad_accum 2 -> 4 on 2 GPUs).
 # Kept: the kernel bandwidths (fixed per encoder in the reference store, independent of K), the GAN
-# block (adaptive weight, so |g_adv| stays 1.5 x |g_mmd|), lr / schedule / steps, and `memory`
-# (B = 32 as in K128 · GAN, so micro_batch 8 and the same grad_accum). The fresh prompts are
-# K128 · GAN's stream, three steps earlier (its bootstrap uses the first 96 rows).
+# block (adaptive weight, so |g_adv| stays 1.5 x |g_mmd|), lr / schedule / steps, and the rest of
+# `memory`. The fresh prompts are K128 · GAN's stream, three steps earlier (its bootstrap uses the
+# first 96 rows).
 # The critic sees only the 32 window rows per step (K128 · GAN: 128).
 extends: ../../../configs/sw_lmmd_train_h100_2gpu_gan.yaml
 exp_name: nocache-k32b32
@@ -34,3 +36,12 @@ cache:
   refresh_every_windows: 0
   refresh_probe_rows: 64
   drift_threshold: 0.0
+
+memory:
+  shard: none
+  grad_reduce: mean
+  optimizer: adamw8bit
+  param_dtype: fp32
+  battery_bf16: false         # the critic needs the store's encoder pipeline
+  micro_batch: 4
+  encoder_offload: false

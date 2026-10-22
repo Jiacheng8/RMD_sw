@@ -64,7 +64,7 @@ done
 [[ "$STEPS" =~ ^[0-9]+$ && "$STEPS" -ge 10 ]] || { echo "--steps must be an integer >= 10" >&2; exit 2; }
 case "$K" in
   128) CONFIG_REL="experiments/no_cache/configs/nocache_k128_b128.yaml"; B=128; MICRO=4; TAG="" ;;
-  32)  CONFIG_REL="experiments/no_cache/configs/nocache_k32_b32.yaml";   B=32;  MICRO=8; TAG="_k32" ;;
+  32)  CONFIG_REL="experiments/no_cache/configs/nocache_k32_b32.yaml";   B=32;  MICRO=4; TAG="_k32" ;;
   *)   echo "--k must be 128 or 32" >&2; exit 2 ;;
 esac
 ROOT="$(realpath -m "$ROOT")"

@@ -168,15 +168,16 @@ def test_k32_config_is_k128_gan_with_k_equal_b_32():
     assert getattr(cfg, "reference_extension", None) in (None, "")
     assert gan_from_config(cfg) == gan_from_config(base) and gan_from_config(cfg).enabled
     assert lr_schedule_from_config(cfg) == lr_schedule_from_config(base)
-    assert memory_from_config(cfg) == memory_from_config(base)
+    assert memory_from_config(cfg).micro_batch == 4
+    assert dataclasses.replace(memory_from_config(cfg), micro_batch=memory_from_config(base).micro_batch) \
+        == memory_from_config(base)
     c = cache_from_config(cfg)
     assert (c.refresh_every_windows, c.drift_threshold, cfg.probe_every) == (0, 0.0, 0)
     for key in ("encoders", "lr", "steps", "save_freq", "joint", "loss", "grad_clip", "seed",
                 "reference_root"):
         assert getattr(cfg, key) == getattr(base, key), key
     assert cfg.exp_name != base.exp_name
-    assert resolve_batching(cfg, memory_from_config(cfg), w, world_size=2)["grad_accum"] == \
-        resolve_batching(base, memory_from_config(base), wb, world_size=2)["grad_accum"]
+    assert resolve_batching(cfg, memory_from_config(cfg), w, world_size=2)["grad_accum"] == 4
 
 
 def test_check_config_rejects_a_bad_force_norm_window():
