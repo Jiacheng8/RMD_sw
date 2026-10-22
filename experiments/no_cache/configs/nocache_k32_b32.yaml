@@ -1,0 +1,36 @@
+# No-cache control, small window: K128 · GAN with K = B = 32 -- the same 32 fresh rows per step,
+# but the window is only those 32 rows.
+#
+#   bash experiments/no_cache/run_nocache.sh --k 32      # 2 x H100, 2000 steps
+#
+# Base: "K128 · GAN" (configs/sw_lmmd_train_h100_2gpu_gan.yaml). Changes:
+#   window.size 128 -> 32 (= window.stride): every row fresh and back-propagated, matched against
+#     the same 32 rows' references; no retained rows, so no cache.
+#   force_norm_window 128: the force keeps K128 · GAN's 2 / (B x 128) normalization instead of
+#     2 / (B K) = 2 / (32 x 32), i.e. it is multiplied by K / 128 = 1/4 (experiments/no_cache/train.py).
+#   probe_every 0, cache.refresh_every_windows 0, cache.drift_threshold 0: nothing to probe/refresh.
+# Kept: the kernel bandwidths (fixed per encoder in the reference store, independent of K), the GAN
+# block (adaptive weight, so |g_adv| stays 1.5 x |g_mmd|), lr / schedule / steps, and `memory`
+# (B = 32 as in K128 · GAN, so micro_batch 8 and the same grad_accum). The fresh prompts are
+# K128 · GAN's stream, three steps earlier (its bootstrap uses the first 96 rows).
+# The critic sees only the 32 window rows per step (K128 · GAN: 128).
+extends: ../../../configs/sw_lmmd_train_h100_2gpu_gan.yaml
+exp_name: nocache-k32b32
+
+# `extends` merges top-level keys only, so whole blocks are restated.
+window:
+  size: 32                    # K
+  stride: 32                  # B = K: every row fresh
+  cyclic: true
+  order_seed: 3407            # the same permutation as K128 · GAN
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+active_global_batch: 32       # B; must equal window.stride
+
+force_norm_window: 128        # force x K / 128: K128 · GAN's 2 / (B x 128)
+
+probe_every: 0
+cache:
+  refresh_every_windows: 0
+  refresh_probe_rows: 64
+  drift_threshold: 0.0

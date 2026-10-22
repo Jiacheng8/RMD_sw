@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# No-cache control on a fresh machine, in one command: K128 · GAN with K = B = 128 -- every step
-# generates all 128 window rows fresh and back-propagates them against those rows' references
-# (experiments/no_cache/configs/nocache_k128_b128.yaml; trainer experiments/no_cache/train.py).
+# No-cache control on a fresh machine, in one command: K128 · GAN with K = B -- every step
+# generates all window rows fresh and back-propagates them against those rows' references
+# (trainer experiments/no_cache/train.py). Two variants:
+#   --k 128 (default)  K = B = 128, experiments/no_cache/configs/nocache_k128_b128.yaml
+#   --k 32             K = B = 32 (32 fresh rows per step, as K128 · GAN), force normalization
+#                      kept at 2/(B x 128), experiments/no_cache/configs/nocache_k32_b32.yaml
 #
 #   git clone -b no-cache https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
 #   echo hf_xxx > .hf_token && chmod 600 .hf_token        # jiachengcui888's Read token
@@ -10,6 +13,7 @@
 #   bash experiments/no_cache/run_nocache.sh              # same STEPS as K128 · GAN (2000)
 #   bash experiments/no_cache/run_nocache.sh --match-hours 2   # same GPU TIME as K128 · GAN
 #   bash experiments/no_cache/run_nocache.sh --resume     # continue after an interruption
+#   bash experiments/no_cache/run_nocache.sh --k 32       # K = B = 32, 2000 steps
 #
 # Stages, all re-runnable:
 #   1 setup   conda env, downloads, the Qwen3 context (via scripts/new_machine.sh --no-train).
@@ -20,7 +24,10 @@
 #   3 train   torchrun -m experiments.no_cache.train, `steps` steps (cosine lr over all of them),
 #             10 checkpoints (save_freq = steps / 10)
 #   4 eval    only with --eval: scripts/eval_run.sh (GenEval + PickScore + seed diversity)
+#   then      <run dir>/run_done, for the upload watch in a second tmux window:
+#             bash scripts/upload_run_hf.sh --root <root> --run <run dir> --repo NAME --watch 600
 #
+# --k 128|32     window size K = B (default 128); pass the same --k with --resume
 # --root DIR     data root (default /root/rdm-sets); ~315 GB free
 # --gpus N       training GPUs (default: every visible card, rounded down to 1/2/4/8); 80 GB cards
 # --steps N      training steps (default 2000). The lr schedule and the 10 checkpoints follow N.
@@ -28,7 +35,8 @@
 #                N = 2 h / (s per step); K128 · GAN does 2000 steps in ~2 h (3.6 s/step).
 # --match-hours H  pick --steps automatically: stage 2 measures s/step and sets
 #                N = H x 3600 / (s per step), rounded down to a multiple of 10. The choice is saved
-#                in <root>/sw_lmmd/no_cache_steps.txt so --resume finds the same run.
+#                in <root>/sw_lmmd/no_cache_steps.txt (--k 32: no_cache_k32_steps.txt) so --resume
+#                finds the same run.
 # --eval         also evaluate every checkpoint when training ends (default: train only --
 #                evaluate later on the 4090s; --no-eval is accepted and is the default)
 # --resume       continue the stopped run from its resume.pth (skips stages 1-2)
@@ -37,11 +45,10 @@ set -euo pipefail
 export PYTHONNOUSERSITE=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-CONFIG_REL="experiments/no_cache/configs/nocache_k128_b128.yaml"
-B=128; MICRO=4
-ROOT="/root/rdm-sets"; GPUS=""; STEPS=2000; EVAL=0; RESUME=0; DRY=0; MATCH_HOURS=
+ROOT="/root/rdm-sets"; GPUS=""; STEPS=2000; EVAL=0; RESUME=0; DRY=0; MATCH_HOURS=; K=128
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --k)       K="$2"; shift 2 ;;
     --root)    ROOT="$2"; shift 2 ;;
     --gpus)    GPUS="$2"; shift 2 ;;
     --steps)   STEPS="$2"; shift 2 ;;
@@ -55,16 +62,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "$STEPS" =~ ^[0-9]+$ && "$STEPS" -ge 10 ]] || { echo "--steps must be an integer >= 10" >&2; exit 2; }
+case "$K" in
+  128) CONFIG_REL="experiments/no_cache/configs/nocache_k128_b128.yaml"; B=128; MICRO=4; TAG="" ;;
+  32)  CONFIG_REL="experiments/no_cache/configs/nocache_k32_b32.yaml";   B=32;  MICRO=8; TAG="_k32" ;;
+  *)   echo "--k must be 128 or 32" >&2; exit 2 ;;
+esac
 ROOT="$(realpath -m "$ROOT")"
-SW="$ROOT/sw_lmmd"; STORE="$SW/reference_store"; OUT="$SW/work_dirs"; CHECK_DIR="$SW/no_cache_check"
-STEPS_FILE="$SW/no_cache_steps.txt"
+SW="$ROOT/sw_lmmd"; STORE="$SW/reference_store"; OUT="$SW/work_dirs"; CHECK_DIR="$SW/no_cache${TAG}_check"
+STEPS_FILE="$SW/no_cache${TAG}_steps.txt"
 if [[ -n "$MATCH_HOURS" ]] && (( RESUME )); then
   [[ -s "$STEPS_FILE" ]] || { echo "--resume --match-hours: $STEPS_FILE missing; pass --steps N" >&2; exit 2; }
   STEPS="$(cat "$STEPS_FILE")"
 fi
 set_run() {     # derived from STEPS
   SAVE_FREQ=$(( STEPS / 10 ))
-  EXP="nocache-k128b128"; [[ "$STEPS" != 2000 ]] && EXP="$EXP-s$STEPS"
+  EXP="nocache-k${K}b${K}"; [[ "$STEPS" != 2000 ]] && EXP="$EXP-s$STEPS"
   RUN_DIR="$OUT/$EXP"
 }
 set_run
@@ -87,7 +99,7 @@ if [[ -z "$GPUS" ]]; then
   while (( GPUS * 2 <= N && GPUS * 2 <= 8 && B % (GPUS * 2 * MICRO) == 0 )); do GPUS=$(( GPUS * 2 )); done
 fi
 (( B % (GPUS * MICRO) == 0 )) || die "--gpus $GPUS does not split B=$B into micro-batches of $MICRO"
-say "no-cache control: K = B = 128, $STEPS steps"
+say "no-cache control: K = B = $K, $STEPS steps"
 info "config    $CONFIG_REL"
 info "root      $ROOT"
 info "gpus      $GPUS (grad_accum $(( B / (GPUS * MICRO) )))$( (( EVAL )) && echo ', eval on all visible GPUs' || echo ', no evaluation')"
@@ -198,3 +210,4 @@ if (( EVAL )); then
 else
   say "done (no eval): checkpoints in $RUN_DIR"
 fi
+date -Is > "$RUN_DIR/run_done"      # tells scripts/upload_run_hf.sh --watch to make its final pass

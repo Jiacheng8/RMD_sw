@@ -113,3 +113,74 @@ def test_config_is_k128_gan_with_k_equal_b():
         assert getattr(cfg, key) == getattr(base, key), key
     assert cfg.exp_name != base.exp_name
     assert resolve_batching(cfg, memory_from_config(cfg), w, world_size=2)["grad_accum"] == 16
+
+
+def test_force_norm_window_scales_the_force_by_k_over_n(store):
+    """``force_norm_window`` N: the force and its gradient are ``K / N`` times the plain K = B
+    ones (normalization ``2 / (B N)``), with the same fixed bandwidths; the monitor is unscaled."""
+    plain = _nocache(store, lr=0.0)
+    scaled = NoCacheTrainer.from_trainer(build_trainer(store, window=K, stride=K, lr=0.0),
+                                         force_norm_window=4 * K)
+    assert NoCacheTrainer.from_trainer(build_trainer(store, window=K, stride=K),
+                                       force_norm_window=K).mmd.__class__ is plain.mmd.__class__
+    assert scaled.sigmas == plain.sigmas == {n: plain.store.sigma(n) for n in NAMES}
+    plain.bootstrap()
+    window = plain._pending_window
+    feats = plain._encode(window.active_ids)
+    for name in NAMES:
+        y = plain._reference_window(name, window.all_ids).detach()
+        out = []
+        for t in (plain, scaled):
+            x = feats[name].detach().clone().requires_grad_(True)
+            force, stats = t.mmd.active_force(x, x.detach(), y, t.sigmas[name])
+            (g,) = torch.autograd.grad(force, x)
+            out.append((force.detach(), g, stats, t.mmd.monitor(x.detach(), y, t.sigmas[name])))
+        (f0, g0, s0, m0), (f1, g1, s1, m1) = out
+        torch.testing.assert_close(f1, f0 / 4)
+        torch.testing.assert_close(g1, g0 / 4)
+        for key in ("force", "active_repulsion", "active_attraction"):
+            torch.testing.assert_close(s1[key], s0[key] / 4)
+        assert float(m1.mmd2) == float(m0.mmd2)
+
+
+def test_scaled_trainer_trains(store):
+    t = NoCacheTrainer.from_trainer(build_trainer(store, window=K, stride=K, lr=1e-2),
+                                    force_norm_window=4 * K)
+    t.bootstrap()
+    for _ in range(2):
+        logs = t.step()
+        assert np.isfinite(logs["force"]) and not logs["skipped"] and logs["active_rows"] == K
+
+
+def test_k32_config_is_k128_gan_with_k_equal_b_32():
+    from rdm.sw_lmmd.launch import (cache_from_config, gan_from_config, lr_schedule_from_config,
+                                    memory_from_config, resolve_batching, window_from_config)
+    from rdm.train.launch import load_config
+
+    base = load_config("configs/sw_lmmd_train_h100_2gpu_gan.yaml")
+    cfg = load_config("experiments/no_cache/configs/nocache_k32_b32.yaml")
+    check_config(cfg)
+    w, wb = window_from_config(cfg), window_from_config(base)
+    assert (w.size, w.stride) == (32, 32) and (wb.size, wb.stride) == (128, 32)
+    assert dataclasses.replace(w, size=128) == wb
+    assert not w.group_by_prompt and cfg.active_global_batch == base.active_global_batch == 32
+    assert cfg.force_norm_window == 128 and getattr(base, "force_norm_window", None) is None
+    assert getattr(cfg, "reference_extension", None) in (None, "")
+    assert gan_from_config(cfg) == gan_from_config(base) and gan_from_config(cfg).enabled
+    assert lr_schedule_from_config(cfg) == lr_schedule_from_config(base)
+    assert memory_from_config(cfg) == memory_from_config(base)
+    c = cache_from_config(cfg)
+    assert (c.refresh_every_windows, c.drift_threshold, cfg.probe_every) == (0, 0.0, 0)
+    for key in ("encoders", "lr", "steps", "save_freq", "joint", "loss", "grad_clip", "seed",
+                "reference_root"):
+        assert getattr(cfg, key) == getattr(base, key), key
+    assert cfg.exp_name != base.exp_name
+    assert resolve_batching(cfg, memory_from_config(cfg), w, world_size=2)["grad_accum"] == \
+        resolve_batching(base, memory_from_config(base), wb, world_size=2)["grad_accum"]
+
+
+def test_check_config_rejects_a_bad_force_norm_window():
+    cfg = SimpleNamespace(window={"size": 8, "stride": 8}, cache={}, probe_every=0,
+                          force_norm_window=0)
+    with pytest.raises(SystemExit, match="force_norm_window"):
+        check_config(cfg)
