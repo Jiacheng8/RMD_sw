@@ -82,6 +82,11 @@ if [[ $SETUP -eq 1 ]]; then
   export PIP_CACHE_DIR="$ROOT/.cache/pip" CONDA_PKGS_DIRS="$ROOT/.cache/conda-pkgs"
   if [[ ! -f "$ENV/.ready" ]]; then              # absent after an interrupted install: redo it
     info "judge env $ENV (python 3.11, torch 2.8.0+cu126, ms-swift 4.6.0, transformers 5.17.0)"
+    # the env comes from the defaults channels, whose Terms of Service must be accepted first
+    # (older conda has no `tos` subcommand and needs none)
+    for ch in https://repo.anaconda.com/pkgs/main https://repo.anaconda.com/pkgs/r; do
+      conda tos accept --override-channels --channel "$ch" >/dev/null 2>&1 || true
+    done
     [[ -x "$ENV/bin/python" ]] || conda create -y -p "$ENV" python=3.11 >/dev/null
     PIP=(env -u PYTHONPATH "$ENV/bin/pip" install -q)       # this repo is not the judge env's
     "${PIP[@]}" torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu126
@@ -89,9 +94,16 @@ if [[ $SETUP -eq 1 ]]; then
     "${PIP[@]}" ms-swift==4.6.0 transformers==5.17.0 "qwen-vl-utils>=0.0.14" \
       "pandas>=2.0" "openpyxl>=3.1" "Pillow>=10" tqdm "huggingface_hub>=0.23" accelerate
     # Qwen3.5's linear-attention layers: without these Triton kernels transformers falls back to
-    # a slow PyTorch path (same results, much slower prefill)
-    "${PIP[@]}" flash-linear-attention || info "flash-linear-attention did not install: the judge runs on the slow path"
+    # a slow PyTorch path (same results, much slower prefill, and OOMs at batch 24 on 80 GB);
+    # fla 0.6 needs a newer triton than torch 2.8 ships (3.4), so it fails to import -> pin 0.5.2
+    "${PIP[@]}" "flash-linear-attention==0.5.2" "fla-core==0.5.2" || info "flash-linear-attention did not install: the judge runs on the slow path"
     touch "$ENV/.ready"
+  fi
+  # envs built before the pin above may still carry fla 0.6, which fails to import: repair them
+  if ! env -u PYTHONPATH "$ENV/bin/python" -c "import fla.ops.gated_delta_rule" >/dev/null 2>&1; then
+    info "flash-linear-attention missing or broken in $ENV: installing 0.5.2"
+    env -u PYTHONPATH "$ENV/bin/pip" install -q "flash-linear-attention==0.5.2" "fla-core==0.5.2" \
+      || info "flash-linear-attention did not install: the judge runs on the slow path"
   fi
   env -u PYTHONPATH "$ENV/bin/python" -c "import swift, transformers, torch; print('    ok  ms-swift', swift.__version__, '| transformers', transformers.__version__, '| torch', torch.__version__)"
   rdm python - "$BENCH" "$JUDGE" <<'PY'
@@ -102,6 +114,12 @@ bench, judge = sys.argv[1:]
 print("    bench ->", fetch_bench(bench))
 print("    judge ->", snapshot_download(BENCH_REPO, revision=JUDGE_REVISION, local_dir=judge))
 PY
+  # ms-swift 4.6 finds several model and template types for Qwen3_5ForConditionalGeneration and refuses to
+  # guess; pin both in the bench backend (re-applied because the fetch above restores the file)
+  sed -i 's/TransformersEngine(model_path, max_batch_size=max_batch_size)$/TransformersEngine(model_path, max_batch_size=max_batch_size, model_type="qwen3_5", template_type="qwen3_5")/' \
+    "$BENCH/backends/ms_swift_backend.py"
+  grep -q 'template_type="qwen3_5"' "$BENCH/backends/ms_swift_backend.py" \
+    || die "could not pin model_type/template_type in $BENCH/backends/ms_swift_backend.py (upstream changed it?)"
   info "done"
   [[ -n "$NAME" ]] || exit 0
 fi
