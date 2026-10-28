@@ -4,13 +4,15 @@
 # dataset, the Qwen3 contexts rebuilt on every GPU, training (z-image/configs/zimage_2step_1024_h100.yaml),
 # then Qwen-Image-Bench on the last checkpoint and on the teacher (z-image/eval_qib).
 #
-#   git clone -b <branch> https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
-#   echo hf_xxx > .hf_token && chmod 600 .hf_token     # a Read token that can read the pack dataset
+# This is the shared body of the launchers ours_two-cards.sh, ours_four-cards.sh and
+# ours_eight-cards.sh, which fix --gpus and the reference pack; run one of those:
+#
+#   git clone -b zimage https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
 #   tmux new -s train
-#   bash z-image/scripts/run_machine-zimage.sh --ref-hf <owner>/<dataset> --dry-run   # plan only
-#   bash z-image/scripts/run_machine-zimage.sh --ref-hf <owner>/<dataset> --gate      # 20 steps: memory/speed
-#   bash z-image/scripts/run_machine-zimage.sh --ref-hf <owner>/<dataset>             # the run
-#   bash z-image/scripts/run_machine-zimage.sh --resume                               # continue it
+#   bash z-image/scripts/ours_two-cards.sh --root /data/<you>/rdm-sets --dry-run   # plan only
+#   bash z-image/scripts/ours_two-cards.sh --root /data/<you>/rdm-sets --gate      # 20 steps: memory/speed
+#   bash z-image/scripts/ours_two-cards.sh --root /data/<you>/rdm-sets             # the run
+#   bash z-image/scripts/ours_two-cards.sh --root /data/<you>/rdm-sets --resume    # continue it
 #
 # Stages (all idempotent: a finished stage is skipped on a re-run):
 #   1 env        scripts/setup_env.sh                 conda env rdm (torch 2.8, diffusers 0.40, bnb)
@@ -35,8 +37,10 @@
 #                  ~1.5 GB of images per evaluated model
 # --ref-hf REPO    the HF dataset holding the pack (needed until stage 3 has run once)
 # --ref-name NAME  the pack's folder in it (default zimage-ref-v1)
-# --gpus N         training GPUs (default: every visible card, rounded down to 1/2/4/8; 80 GB cards,
-#                  2 at least). Choose cards with CUDA_VISIBLE_DEVICES.
+# --gpus N         training GPUs, 2 / 4 / 8 (set by the launcher; default: every visible card,
+#                  rounded down to 1/2/4/8). 80 GB cards. Stages 5 and 7 use every visible card.
+#                  Choose cards with CUDA_VISIBLE_DEVICES.
+# --micro-batch N  rows per rank per forward (default 1, the config's); 2 only if --gate shows room
 # --config YAML    (default z-image/configs/zimage_2step_1024_h100.yaml)
 # --gate           20 steps into <root>/zimage/work_dirs_gate: memory and s/step before the real run
 # --steps N        override the config's steps
@@ -61,7 +65,7 @@ if [[ -z "${HF_TOKEN:-}" && -s "$REPO/.hf_token" ]]; then
 fi
 ROOT="/root/rdm-sets"; REF_HF=""; REF_NAME="zimage-ref-v1"; GPUS=""
 CONFIG="$ZDIR/configs/zimage_2step_1024_h100.yaml"; ENV_NAME="rdm"; HF_CACHE=""; OUTPUT_DIR=""
-STEPS=""; GATE=0; RESUME=0; DRY=0; ALLOW_LOW_DISK=0
+STEPS=""; GATE=0; RESUME=0; DRY=0; ALLOW_LOW_DISK=0; MICRO=""
 DO_ENV=1; DO_DOWNLOAD=1; DO_REFERENCE=1; DO_CONTEXTS=1; DO_TRAIN=1; DO_EVAL=1
 EVAL_CKPTS="last"; BASELINES=1; EVAL_ONLY=0
 while [[ $# -gt 0 ]]; do
@@ -75,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --hf-cache)       HF_CACHE="$2"; shift 2 ;;
     --output-dir)     OUTPUT_DIR="$2"; shift 2 ;;
     --steps)          STEPS="$2"; shift 2 ;;
+    --micro-batch)    MICRO="$2"; shift 2 ;;
     --gate)           GATE=1; shift ;;
     --resume)         RESUME=1; shift ;;
     --skip-env)       DO_ENV=0; shift ;;
@@ -136,7 +141,8 @@ if [[ -z "$GPUS" ]]; then
   GPUS=1
   while (( GPUS * 2 <= N_GPU && GPUS * 2 <= 8 )); do GPUS=$(( GPUS * 2 )); done
 fi
-(( 32 % GPUS == 0 )) || die "--gpus $GPUS does not divide B = 32"
+(( 32 % GPUS == 0 && 128 % GPUS == 0 )) || die "--gpus $GPUS does not divide B = 32 and K = 128 (use 1/2/4/8)"
+[[ -z "$MICRO" ]] || (( (32 / GPUS) % MICRO == 0 )) || die "--micro-batch $MICRO does not divide the $(( 32 / GPUS )) rows per GPU"
 if command -v nvidia-smi >/dev/null 2>&1 && (( N_GPU > 0 )); then
   SEL=(-i "$(IFS=,; echo "${GPU_IDS[*]}")")
   info "gpus        $N_GPU visible: $(smi "${SEL[@]}" --query-gpu=name,memory.total --format=csv,noheader | sort | uniq -c | tr -s ' ' | tr '\n' ';')"
@@ -260,6 +266,7 @@ fi
 TRAIN_ENV=(ASSETS="$ROOT" CONDA_ENV="$ENV_NAME" GPUS="$GPUS" REFERENCE_ROOT="$STORE" OUTPUT_DIR="$OUTPUT_DIR")
 TRAIN_ARGS=("$CONFIG")
 [[ -n "$STEPS" ]] && TRAIN_ARGS+=(--set "steps=$STEPS")
+[[ -n "$MICRO" ]] && TRAIN_ARGS+=(--set "memory.micro_batch=$MICRO")
 read -r EXP CFG_STEPS SAVE_FREQ <<< "$(python3 - "$CONFIG" <<'PY'
 import re, sys
 t = open(sys.argv[1]).read()

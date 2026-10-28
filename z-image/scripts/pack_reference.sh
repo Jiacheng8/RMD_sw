@@ -115,4 +115,4 @@ STAGE="$OUT/.upload_$NAME"
 conda run -n "$CONDA_ENV" --no-capture-output hf upload-large-folder "$REPO_ID" "$STAGE" \
   --repo-type dataset --exclude "*/.staged" --exclude ".cache/**" || die "upload interrupted; re-run the same command to resume"
 say "done: $REPO_ID/$NAME"
-info "on the training machine: bash z-image/scripts/run_machine-zimage.sh --ref-hf $REPO_ID --ref-name $NAME"
+info "on the training machine: bash z-image/scripts/_ours_run.sh --ref-hf $REPO_ID --ref-name $NAME (or edit the ours_*-cards.sh launchers)"

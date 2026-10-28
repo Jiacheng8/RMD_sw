@@ -12,7 +12,7 @@
 # 3. Packs reference_store/ + the prompt table (~1.6 GB, no PNGs, no contexts) and uploads it,
 #    public, to jiachengcui888/zimage-ref-v1 (pack_reference.sh). An interrupted upload resumes
 #    when this is run again.
-# The training machine then uses: bash z-image/scripts/run_machine-zimage.sh --ref-hf jiachengcui888/zimage-ref-v1
+# The training machine then uses: bash z-image/scripts/ours_two-cards.sh   # (ours_four-cards.sh / ours_eight-cards.sh on 4 / 8 GPUs)
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 

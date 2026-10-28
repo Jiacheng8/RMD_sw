@@ -33,7 +33,7 @@ L = Σ_k w_k · ( force_k + λ_k · adv_k ),   k = 1, 2
 | `scripts/upload_reference_v1.sh` | 本机：reference_v1 做完后一键打包并公开上传到 `jiachengcui888/zimage-ref-v1` |
 | `scripts/pack_reference.sh` | 本机：把做好的参考集打成训练包（不含 PNG 和 context，约 1.6 GB），可上传 HF dataset |
 | `eval_qib/` | Qwen-Image-Bench 本地评测：出图 → 官方 `judge.py` + Q-Judger 打分 → 和论文榜单对照的表 |
-| `scripts/run_machine-zimage.sh` | 新机器一键：环境 → 下载 → 训练包 → 重建 context → 训练 |
+| `scripts/ours_two-cards.sh`、`ours_four-cards.sh`、`ours_eight-cards.sh` | 新机器一键（2 / 4 / 8 卡）：环境 → 下载 → 评测环境 → 训练包 → 重建 context → 训练 → 评测；共用主体 `_ours_run.sh` |
 | `scripts/train.sh` | 训练入口（含 preflight） |
 | `tests/` | CPU 小模型测试（`pytest z-image/tests`） |
 
@@ -43,14 +43,14 @@ L = Σ_k w_k · ( force_k + λ_k · adv_k ),   k = 1, 2
 # 本机（reference_v1 做完后）：打包并公开上传到 jiachengcui888/zimage-ref-v1，会提示输入 HF Write token
 bash z-image/scripts/upload_reference_v1.sh
 
-# 新机器（2×H100）
+# 新机器：按卡数选脚本（ours_two-cards.sh / ours_four-cards.sh / ours_eight-cards.sh），参考包已内置
 git clone -b zimage https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
 tmux new -s train
-bash z-image/scripts/run_machine-zimage.sh --ref-hf jiachengcui888/zimage-ref-v1 --dry-run   # 只检查
-bash z-image/scripts/run_machine-zimage.sh --ref-hf jiachengcui888/zimage-ref-v1 --gate      # 20 步测显存和速度
-bash z-image/scripts/run_machine-zimage.sh --ref-hf jiachengcui888/zimage-ref-v1             # 训练 + 评测
-bash z-image/scripts/run_machine-zimage.sh --resume                                          # 中断后续跑
-bash z-image/scripts/run_machine-zimage.sh --eval-only [--eval-ckpts all]                    # 只评测
+bash z-image/scripts/ours_eight-cards.sh --root /data/<你>/rdm-sets --dry-run     # 只检查
+bash z-image/scripts/ours_eight-cards.sh --root /data/<你>/rdm-sets --gate        # 20 步测显存和速度
+bash z-image/scripts/ours_eight-cards.sh --root /data/<你>/rdm-sets               # 训练 + 评测
+bash z-image/scripts/ours_eight-cards.sh --root /data/<你>/rdm-sets --resume      # 中断后续跑
+bash z-image/scripts/ours_eight-cards.sh --root /data/<你>/rdm-sets --eval-only   # 只评测
 ```
 
 | 阶段 | 内容 |
@@ -63,6 +63,7 @@ bash z-image/scripts/run_machine-zimage.sh --eval-only [--eval-ckpts all]       
 | 6 train | FSDP 训练 2 步学生 |
 | 7 eval | Qwen-Image-Bench：最终 checkpoint + 老师 9 步、2 步（老师每个 root 只评一次），表格写到 `<run>/qwen_image_bench.md` |
 
+三个脚本只差训练卡数（结果相同，速度不同；估算 H100 每步 2 卡约 40 s、4 卡约 21 s、8 卡约 11–12 s，2000 步约 22 / 12 / 6–7 小时）；context 重建和评测用所有可见卡。
 每个阶段做完的会自动跳过；`--gate` 不存 checkpoint，所以不跑第 7 步；`--no-eval` 跳过 3 和 7。
 磁盘约 330 GB。
 
