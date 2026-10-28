@@ -5,7 +5,7 @@
 #   bash z-image/scripts/evaluate-baseline.sh --root /data/<you>/rdm-sets              # teacher, 9 steps
 #   bash z-image/scripts/evaluate-baseline.sh --root /data/<you>/rdm-sets --steps 9,2  # + the teacher at 2 steps
 #   bash z-image/scripts/evaluate-baseline.sh --root /data/<you>/rdm-sets --limit 20   # smoke test, 20 prompts
-#   CUDA_VISIBLE_DEVICES=0,2,3 bash z-image/scripts/evaluate-baseline.sh --root ...   # which cards
+#   bash z-image/scripts/evaluate-baseline.sh --root ... --gpus 0,2,3                # these cards only
 #
 # Stages (each skipped when already done):
 #   1 env       scripts/setup_env.sh (conda env rdm), unless it exists
@@ -23,20 +23,26 @@
 # --limit N      the first N prompts only (a smoke test; scores not comparable with the leaderboard,
 #                kept apart as runs/turboN_limitN)
 # --env NAME     the rdm conda env (default rdm)
-# The rendering and the judge use every visible card: one judge copy per 80 GB card (or per 3 x 24 GB),
-# copies in parallel. Estimates per model: ~10-15 min on 8 x H100, ~40 min on 2 x H100, ~5 h on
-# 4 x 4090 (one copy) -- not measured yet.
+# --gpus IDS     the cards to use (default: picked automatically, see below)
+#
+# Cards: by default every IDLE card (< 2 GB in use; within CUDA_VISIBLE_DEVICES if set): a card
+# someone else is using is skipped, on a shared machine too. Rendering uses all of them; the judge
+# takes whole copies from them -- one copy per 80 GB card, or per 3 x 24 GB -- and runs the copies in
+# parallel, each on its share of the images. Estimates per model: ~10-15 min on 8 x H100, ~40 min on
+# 2 x H100, ~5 h on 3-5 x 4090 (one copy) -- not measured yet.
+# A fresh machine needs only conda and the NVIDIA driver: every download is public (no HF token).
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$ZDIR/.." && pwd)"
-ROOT="/root/rdm-sets"; STEPS="9"; LIMIT=0; ENV_NAME="rdm"
+ROOT="/root/rdm-sets"; STEPS="9"; LIMIT=0; ENV_NAME="rdm"; GPUS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root)  ROOT="$2"; shift 2 ;;
     --steps) STEPS="$2"; shift 2 ;;
     --limit) LIMIT="$2"; shift 2 ;;
     --env)   ENV_NAME="$2"; shift 2 ;;
+    --gpus)  GPUS="$2"; shift 2 ;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -50,10 +56,24 @@ command -v conda >/dev/null 2>&1 || die "conda not found on PATH"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$ROOT/.cache/pip}" CONDA_PKGS_DIRS="${CONDA_PKGS_DIRS:-$ROOT/.cache/conda-pkgs}"
 IFS=, read -r -a STEP_LIST <<< "$STEPS"
 for n in "${STEP_LIST[@]}"; do [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "--steps takes step counts, e.g. 9,2"; done
-if [[ -n "${CUDA_VISIBLE_DEVICES+x}" ]]; then GPUS="$CUDA_VISIBLE_DEVICES"
-else GPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader | tr -d ' ' | paste -sd, -); fi
-[[ -n "$GPUS" ]] || die "no GPU visible"
-info "root $ROOT | GPUs $GPUS | Turbo steps ${STEP_LIST[*]}${LIMIT:+$( (( LIMIT )) && echo " | first $LIMIT prompts")}"
+command -v nvidia-smi >/dev/null 2>&1 || die "nvidia-smi not found: no NVIDIA driver?"
+if [[ -z "$GPUS" ]]; then                      # idle cards among the visible ones
+  CAND=",${CUDA_VISIBLE_DEVICES:-},"
+  IDLE=(); BUSY=()
+  while IFS=, read -r idx used; do
+    idx=${idx// /}; used=${used// /}
+    [[ -n "${CUDA_VISIBLE_DEVICES:-}" && "$CAND" != *",$idx,"* ]] && continue
+    if (( used < 2048 )); then IDLE+=("$idx"); else BUSY+=("$idx (${used} MiB used)"); fi
+  done < <(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits)
+  (( ${#BUSY[@]} )) && info "skipping busy card(s): ${BUSY[*]}"
+  GPUS=$(IFS=,; echo "${IDLE[*]}")
+fi
+[[ -n "$GPUS" ]] || die "no idle GPU (pass --gpus to choose cards yourself)"
+MIN_MIB=$(nvidia-smi -i "$GPUS" --query-gpu=memory.total --format=csv,noheader,nounits | sort -n | head -1)
+PER=$(( (66000 + MIN_MIB - 1) / MIN_MIB )); N=$(awk -F, '{print NF}' <<< "$GPUS")
+(( N >= PER )) || die "the judge needs $PER card(s) of $(( MIN_MIB / 1024 )) GB for one copy; only $N idle ($GPUS)"
+info "cards $GPUS: render on all $N, judge $(( N / PER )) cop$( (( N / PER > 1 )) && echo ies || echo y) x $PER card(s)"
+info "root $ROOT | Turbo steps ${STEP_LIST[*]}${LIMIT:+$( (( LIMIT )) && echo " | first $LIMIT prompts")}"
 
 # 1 ------------------------------------------------------------------------------------------------
 if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
