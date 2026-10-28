@@ -241,11 +241,25 @@ def gpu_seconds_of_run(run_dir) -> tuple[float, int, int]:
     return sum(r["seconds"] for r in last.values()) * world, world, len(last)
 
 
-def plan_steps(budget_gpu_s: float, world: int, step_seconds: list, calib: int) -> int:
-    """Steps that spend the budget at the median measured s/step (the first two are warm-up)."""
-    timed = step_seconds[2:] if len(step_seconds) > 3 else step_seconds
-    sps = statistics.median(timed)
-    return max(calib, int(budget_gpu_s / (world * sps)))
+def measured_s_per_step(step_seconds: list) -> float:
+    """Median s/step, the first step (warm-up) left out once there are others."""
+    return statistics.median(step_seconds[1:] if len(step_seconds) > 1 else step_seconds)
+
+
+def plan_steps(budget_gpu_s: float, world: int, step_seconds: list, done: int) -> int:
+    """Steps that spend the budget at the measured s/step (never fewer than already done)."""
+    return max(done, 1, int(budget_gpu_s / (world * measured_s_per_step(step_seconds))))
+
+
+def plan_ready(budget_gpu_s: float, world: int, step_seconds: list, calib: int) -> bool:
+    """Plan after ``calib`` timed steps -- or as soon as 10 % of the budget is spent: at 10240
+    rows one step is ~1/7 of ours' whole budget, so ten timed steps would overshoot it."""
+    return len(step_seconds) >= calib or sum(step_seconds) * world >= 0.1 * budget_gpu_s
+
+
+def checkpoint_steps(total: int, n: int) -> set:
+    """``n`` evenly spaced steps ending at ``total`` (fewer if ``total < n``)."""
+    return {math.ceil(i * total / n) for i in range(1, n + 1)}
 
 
 # ------------------------------------------------------------------------------ build + run
@@ -342,8 +356,10 @@ def main() -> int:
     budget.add_argument("--match-run", help="ours' run dir: spend the same GPU time")
     budget.add_argument("--match-gpu-hours", type=float, help="spend this many GPU-hours")
     budget.add_argument("--steps", type=int, help="a fixed number of steps")
-    ap.add_argument("--rows", type=int, default=128, help="fresh rows N per step (default 128)")
-    ap.add_argument("--calib-steps", type=int, default=10)
+    ap.add_argument("--rows", type=int, default=10240,
+                    help="fresh rows N per step (default 10240, iRDM's rollout size)")
+    ap.add_argument("--calib-steps", type=int, default=10,
+                    help="timed steps before the plan (fewer once 10 %% of the budget is spent)")
     ap.add_argument("--landmarks", type=int, default=4096)
     ap.add_argument("--nystrom-dir", default=None)
     ap.add_argument("--micro-batch", type=int, default=0)
@@ -384,14 +400,13 @@ def main() -> int:
                     "ref_gpus": ref_world, "ref_steps": ref_steps}
         else:
             plan = {"budget_gpu_hours": float(a.match_gpu_hours), "source": "--match-gpu-hours"}
-    # provisional horizon for the timed steps (only their warm-up lr depends on it): the cost of a
+    # provisional horizon until the plan (only the first steps' lr depends on it): the cost of a
     # step grows with its rows, ours does 2000 steps of 32 fresh rows
-    provisional = plan.get("steps") or max(a.calib_steps, round(2000 * 32 / a.rows))
+    provisional = plan.get("steps") or max(1, round(2000 * 32 / a.rows))
     set_horizon(trainer, cfg, provisional)
 
     log = open(run / "train_log.jsonl", "a") if is_main_process() else None
     seconds, t0 = [], time.time()
-    every = None
 
     def save(path, with_opt):
         state = trainer.state_dict(with_optimizer=with_opt)
@@ -409,9 +424,10 @@ def main() -> int:
         logs = trainer.step()
         logs["seconds"] = time.time() - st
         seconds.append(logs["seconds"])
-        if total is None and len(seconds) >= a.calib_steps:
-            total = plan_steps(plan["budget_gpu_hours"] * 3600, world, seconds, a.calib_steps)
-            plan.update(steps=total, measured_s_per_step=statistics.median(seconds[2:]),
+        budget_s = plan.get("budget_gpu_hours", 0) * 3600
+        if total is None and plan_ready(budget_s, world, seconds, a.calib_steps):
+            total = plan_steps(budget_s, world, seconds, trainer.step_idx)
+            plan.update(steps=total, measured_s_per_step=measured_s_per_step(seconds),
                         gpus=world, rows=a.rows)
             set_horizon(trainer, cfg, total)
             if is_main_process():
@@ -428,9 +444,11 @@ def main() -> int:
         if plan.get("steps"):
             if is_main_process() and not plan_path.exists():
                 plan_path.write_text(json.dumps(plan, indent=2))
-            every = max(1, plan["steps"] // max(1, a.checkpoints))
-            if trainer.step_idx % every == 0 or trainer.step_idx == plan["steps"]:
+            at_ckpt = trainer.step_idx in checkpoint_steps(plan["steps"], a.checkpoints)
+            if at_ckpt:
                 save(run / f"step_{trainer.step_idx:07d}.pth", with_opt=False)
+            # a long step (10240 rows: hours) is worth a resume point every time
+            if at_ckpt or logs["seconds"] > 600:
                 save(run / "resume.pth", with_opt=not sharded)
     if log is not None:
         log.close()
