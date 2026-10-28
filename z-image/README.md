@@ -34,6 +34,8 @@ L = Σ_k w_k · ( force_k + λ_k · adv_k ),   k = 1, 2
 | `scripts/pack_reference.sh` | 本机：把做好的参考集打成训练包（不含 PNG 和 context，约 1.6 GB），可上传 HF dataset |
 | `zimage_distill/rdm_global.py` | baseline：原始 RDM（local-to-global）——每步 10240 行全新生成，和整个参考集（Nyström 4096 锚点）做 MMD，无缓存、无配对、无 GAN；其余（学生、encoder、预处理、学习率）与我们相同；步数按 GPU 时间与我们对齐 |
 | `scripts/rdm-global_two-cards.sh`、`_four-cards.sh`、`_eight-cards.sh` | baseline 一键（准备 → 训练 → 评测），共用主体 `_rdm_global_run.sh`；同一 `--root` 下自动对齐我们那次训练的 GPU 时间 |
+| `zimage_distill/dmd2.py`、`dmd2_latents.py` | baseline：DMD2（官方 SDXL 配方：batch 128、fake:学生 = 5:1、lr 5e-7、GAN 5e-3 / 1e-2、梯度裁剪 10），real score = 非蒸馏的 Z-Image（CFG 4），fake score 从它初始化并带 GAN 头；GAN 的真实数据是 HF 上的 Turbo 渲染图（`jiachengcui888/zimage-turbo-reference`）编码成的 latent；学生、步数、评测与我们相同，按 GPU 时间对齐 |
+| `scripts/dmd2_four-cards.sh`、`dmd2_eight-cards.sh` | DMD2 一键（准备 → base 模型 → 真实 latent → 训练 → 评测），共用主体 `_dmd2_run.sh`；三个 6B 模型，至少 4×80 GB |
 | `scripts/evaluate-baseline.sh` | 一键评测 Z-Image-Turbo 本身的 Qwen-Image-Bench 分数（老师基线，`--steps 9,2`），不需要参考集和训练 |
 | `eval_qib/` | Qwen-Image-Bench 本地评测：出图 → 官方 `judge.py` + Q-Judger 打分 → 和论文榜单对照的表 |
 | `scripts/ours_two-cards.sh`、`ours_four-cards.sh`、`ours_eight-cards.sh` | 新机器一键（2 / 4 / 8 卡）：环境 → 下载 → 评测环境 → 训练包 → 重建 context → 训练 → 评测；共用主体 `_ours_run.sh` |
