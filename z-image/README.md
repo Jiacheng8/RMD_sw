@@ -32,6 +32,7 @@ L = Σ_k w_k · ( force_k + λ_k · adv_k ),   k = 1, 2
 | `process_z-image/` | 参考集构建代码（prompt 冻结 → 老师渲染 → 提特征 → finalize），从 `/data/ironman/jiacheng/RDM/z-image/process` 复制，只改了路径 |
 | `scripts/upload_reference_v1.sh` | 本机：reference_v1 做完后一键打包并公开上传到 `jiachengcui888/zimage-ref-v1` |
 | `scripts/pack_reference.sh` | 本机：把做好的参考集打成训练包（不含 PNG 和 context，约 1.6 GB），可上传 HF dataset |
+| `scripts/evaluate-baseline.sh` | 一键评测 Z-Image-Turbo 本身的 Qwen-Image-Bench 分数（老师基线，`--steps 9,2`），不需要参考集和训练 |
 | `eval_qib/` | Qwen-Image-Bench 本地评测：出图 → 官方 `judge.py` + Q-Judger 打分 → 和论文榜单对照的表 |
 | `scripts/ours_two-cards.sh`、`ours_four-cards.sh`、`ours_eight-cards.sh` | 新机器一键（2 / 4 / 8 卡）：环境 → 下载 → 评测环境 → 训练包 → 重建 context → 训练 → 评测；共用主体 `_ours_run.sh` |
 | `scripts/train.sh` | 训练入口（含 preflight） |
