@@ -23,16 +23,16 @@ wandb login
 
 ## 第 2 步：把下面这段发给 coding agent（Codex / Claude Code）
 
-复制下面这段（代码块右上角有复制按钮），把表里列的 4 处改成你的情况，其余不动：
+<span style="color:#d73a49">**红色的 4 处**</span>改成你的情况，其余不动（在预览里选中复制，不要从源码复制）：
 
-```text
+<pre>
 请按照仓库里的实验指南，在这台机器上跑一个实验。
 
 - 仓库：https://github.com/Jiacheng8/RMD_sw.git ，分支 zimage
-- 工作目录：/workspace —— 仓库放在 /workspace/RDM（没有就 clone 到这里；已有就 cd 进去 git pull），所有命令在 /workspace/RDM 下执行
-- 大数据目录（即 --root）：/workspace/rdm-sets —— 模型权重、训练数据、checkpoint、评测结果全部放这里（约 700 GB），不要放到别的盘
-- 实验指南：z-image/guides/01_ours.md
-- GPU 数量：8
+- 工作目录：<span style="color:#d73a49"><b>/workspace</b></span> —— 仓库放在 <span style="color:#d73a49"><b>/workspace/RDM</b></span>（没有就 clone 到这里；已有就 cd 进去 git pull），所有命令在 <span style="color:#d73a49"><b>/workspace/RDM</b></span> 下执行
+- 大数据目录（即 --root）：<span style="color:#d73a49"><b>/workspace/rdm-sets</b></span> —— 模型权重、训练数据、checkpoint、评测结果全部放这里（约 700 GB），不要放到别的盘
+- 实验指南：z-image/guides/<span style="color:#d73a49"><b>01_ours.md</b></span>
+- GPU 数量：<span style="color:#d73a49"><b>8</b></span>
 - wandb：我已经在这台机器上登录过，你不用处理
 
 要求：
@@ -42,7 +42,7 @@ wandb login
    启动后告诉我输出里是 wandb on 还是 wandb off。
 4. 出错时不要自己改代码或重开实验，把命令、报错和日志最后 30 行发给我。
 5. 结束后把结果表原样发给我。
-```
+</pre>
 
 | 要改的地方 | 填什么 |
 |---|---|
@@ -54,14 +54,14 @@ wandb login
 <details>
 <summary><b>English version of the prompt</b>（点开；同样改这 4 处）</summary>
 
-```text
+<pre>
 Please run one experiment on this machine by following the experiment guide in the repository.
 
 - Repository: https://github.com/Jiacheng8/RMD_sw.git , branch zimage
-- Working directory: /workspace -- the repository lives in /workspace/RDM (clone it there if missing; otherwise cd into it and git pull); run every command from /workspace/RDM
-- Big-data directory (i.e. --root): /workspace/rdm-sets -- model weights, training data, checkpoints and evaluation results all go here (~700 GB); do not put them on any other disk
-- Experiment guide: z-image/guides/01_ours.md
-- Number of GPUs: 8
+- Working directory: <span style="color:#d73a49"><b>/workspace</b></span> -- the repository lives in <span style="color:#d73a49"><b>/workspace/RDM</b></span> (clone it there if missing; otherwise cd into it and git pull); run every command from <span style="color:#d73a49"><b>/workspace/RDM</b></span>
+- Big-data directory (i.e. --root): <span style="color:#d73a49"><b>/workspace/rdm-sets</b></span> -- model weights, training data, checkpoints and evaluation results all go here (~700 GB); do not put them on any other disk
+- Experiment guide: z-image/guides/<span style="color:#d73a49"><b>01_ours.md</b></span>
+- Number of GPUs: <span style="color:#d73a49"><b>8</b></span>
 - wandb: I have already logged in on this machine; you do not need to handle it
 
 Requirements:
@@ -71,7 +71,7 @@ Requirements:
    after launch, tell me whether the output says wandb on or wandb off.
 4. If something fails, do not change the code or restart the experiment yourself. Send me the command, the error and the last 30 lines of the log.
 5. When it finishes, send me the result table exactly as the script printed it.
-```
+</pre>
 
 The guides themselves are in Chinese; Codex and Claude Code read them fine.
 </details>
