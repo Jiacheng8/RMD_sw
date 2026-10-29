@@ -8,9 +8,9 @@
 #   bash z-image/scripts/smoke_test_four-cards.sh --root /root/rdm-sets --only dmd2      # one of them
 #
 #   1 ours   ours_four-cards.sh --steps 20 --eval-limit 20 (+ the teacher at 9 and 2 steps, 20 prompts)
-#   2 rdm    rdm-global_four-cards.sh --steps 20 --rows 128 --eval-limit 20
-#            (10240 rows per step -- the real setting -- is ~3.5 h per step on 4 x A100: 20 of them do
-#            not fit a smoke test; --rdm-rows 10240 --rdm-steps 1 times one real step instead)
+#   2 rdm    rdm-global_four-cards.sh --rows 10240 --steps 2 --eval-limit 20: the real batch (iRDM's),
+#            2 steps -- one 10240-row step is ~3.5 h on 4 x A100 [estimate], so ~7 h; --rdm-rows 128
+#            for a quick check of the code path only
 #   3 dmd2   dmd2_four-cards.sh --iterations 20 --eval-limit 20, batch 128 (DMD2's), real data from
 #            2 tar shards (~2.8k renders) in a smoke-only dir; 20 iterations = 4 student updates
 #
@@ -27,13 +27,13 @@
 # --only LIST       ours,rdm,dmd2 (default all three, in this order)
 # --steps N         training steps / DMD2 iterations (default 20)
 # --eval-limit N    prompts rendered + judged (default 20)
-# --rdm-rows N      RDM's rows per step (default 128); --rdm-steps N its steps (default --steps)
+# --rdm-rows N      RDM's rows per step (default 10240); --rdm-steps N its steps (default 2)
 # --keep-ckpts      keep the smoke runs' checkpoints
 # --fresh           delete <root>/zimage/smoke first (re-run everything of the smoke runs)
 set -uo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ROOT="/root/rdm-sets"; ONLY="ours,rdm,dmd2"; STEPS=20; LIMIT=20; RDM_ROWS=128; RDM_STEPS=""
+ROOT="/root/rdm-sets"; ONLY="ours,rdm,dmd2"; STEPS=20; LIMIT=20; RDM_ROWS=10240; RDM_STEPS=2
 KEEP=0; FRESH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,7 +58,7 @@ mkdir -p "$LOGS" "$WORK"
 EXP=$(python3 -c "import re,sys; print(re.search(r'^exp_name:\s*(\S+)', open(sys.argv[1]).read(), re.M).group(1))" \
       "$ZDIR/configs/zimage_2step_1024_h100.yaml")
 N_GPU=$(nvidia-smi -L 2>/dev/null | wc -l)
-say "smoke test: $ONLY on 4 GPUs ($N_GPU visible) | $STEPS steps, $LIMIT prompts judged | root $ROOT"
+say "smoke test: $ONLY on 4 GPUs ($N_GPU visible) | $STEPS steps (RDM: $RDM_STEPS x $RDM_ROWS rows), $LIMIT prompts judged | root $ROOT"
 (( N_GPU >= 4 )) || { echo "needs 4 GPUs, $N_GPU visible" >&2; exit 1; }
 [[ -z "${TMUX:-}${STY:-}" ]] && info "not inside tmux/screen: a dropped SSH session stops the test"
 
@@ -108,7 +108,7 @@ for key in "${WHICH[@]}"; do
         bash "$ZDIR/scripts/ours_four-cards.sh" --root "$ROOT" --steps "$STEPS" \
           --output-dir "$WORK" --eval-limit "$LIMIT" ;;
     rdm)
-      rs="${RDM_STEPS:-$STEPS}"
+      rs="$RDM_STEPS"
       run_one rdm "$WORK/$EXP-rdm-global-N$RDM_ROWS" "rdm-global-N${RDM_ROWS}_s${rs}_limit$LIMIT" \
         bash "$ZDIR/scripts/rdm-global_four-cards.sh" --root "$ROOT" --rows "$RDM_ROWS" --steps "$rs" \
           --checkpoints 1 --output-dir "$WORK" --eval-limit "$LIMIT" ;;
