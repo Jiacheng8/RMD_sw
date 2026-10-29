@@ -110,11 +110,15 @@ def test_gpu_time_plan(tmp_path):
                             "active_rows_per_rank": 16}) + "\n")
     gpu_s, world, steps = gpu_seconds_of_run(run)
     assert (world, steps) == (2, 10) and gpu_s == pytest.approx(10 * 90 * 2)
-    # 8 GPUs at 30 s/step (the slow first step ignored): 1800 GPU-s -> 7 steps
+    # 8 GPUs at 30 s/step (the slow first step ignored): 1800 GPU-s -> 7.5 steps
     assert plan_steps(gpu_s, 8, [200] + [30] * 9, done=10) == 10      # never below what is done
-    assert plan_steps(gpu_s, 8, [200, 30, 30], done=3) == 7
+    assert plan_steps(gpu_s, 8, [200, 30, 30], done=3) == 8          # 7.5 -> 8 (rounded)
     # 10240 rows: one step spends a large share of the budget -> plan after it, not after 10
     assert plan_ready(100 * 3600, 8, [2 * 3600], calib=10)            # 16 of 100 GPU-h
+    # 100 GPU-h at ~16 GPU-h per 10240-row step: the nearest step count, not the truncated one
+    assert plan_steps(100 * 3600, 8, [2 * 3600], done=1) == 6          # 6.25 -> 6
+    assert plan_steps(100 * 3600, 4, [3.4 * 3600], done=1) == 7        # 7.35 -> 7
+    assert plan_steps(100 * 3600, 2, [7.4 * 3600], done=1) == 7        # 6.76 -> 7 (int: 6)
     assert not plan_ready(100 * 3600, 8, [25.0] * 9, calib=10)
     assert checkpoint_steps(2000, 4) == {500, 1000, 1500, 2000}
     assert checkpoint_steps(7, 4) == {2, 4, 6, 7} and checkpoint_steps(2, 4) == {1, 2}

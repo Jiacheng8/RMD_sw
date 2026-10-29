@@ -492,6 +492,7 @@ def main() -> int:
 
     log = open(run / "train_log.jsonl", "a") if is_main_process() else None
     seconds, t0 = [], time.time()
+    last_resume = time.time()
     while True:
         total = plan.get("iterations")
         if total is not None and trainer.iteration >= total:
@@ -524,8 +525,12 @@ def main() -> int:
             at_ckpt = trainer.iteration in checkpoint_steps(plan["iterations"], a.checkpoints)
             if at_ckpt:
                 save(run / f"step_{trainer.iteration:07d}.pth", full=False)
-            if at_ckpt or (logs["seconds"] > 600 and trainer.iteration % a.ratio == 0):
+            # a resume point at the checkpoints and, between them, about every hour (at a cycle
+            # boundary): an iteration is ~1-2 min, so "slow iterations only" would leave a quarter
+            # of the run between resume points
+            if at_ckpt or (trainer.iteration % a.ratio == 0 and time.time() - last_resume > 3600):
                 save(run / "resume.pth", full=True)
+                last_resume = time.time()
     if log is not None:
         log.close()
     logger.info("[dmd2] done: %d iterations in %.2f h -> %s", trainer.iteration,

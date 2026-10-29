@@ -292,8 +292,10 @@ def measured_s_per_step(step_seconds: list) -> float:
 
 
 def plan_steps(budget_gpu_s: float, world: int, step_seconds: list, done: int) -> int:
-    """Steps that spend the budget at the measured s/step (never fewer than already done)."""
-    return max(done, 1, int(budget_gpu_s / (world * measured_s_per_step(step_seconds))))
+    """Steps that spend the budget at the measured s/step, rounded to the nearest (never fewer
+    than already done). Rounded, not truncated: at 10240 rows one step is ~16 % of ours' budget,
+    so truncating could leave the baseline most of a step short of ours' GPU time."""
+    return max(done, 1, round(budget_gpu_s / (world * measured_s_per_step(step_seconds))))
 
 
 def plan_ready(budget_gpu_s: float, world: int, step_seconds: list, calib: int) -> bool:
