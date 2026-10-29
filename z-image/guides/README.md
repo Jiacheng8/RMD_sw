@@ -79,6 +79,6 @@ The guides themselves are in Chinese; Codex and Claude Code read them fine.
 ## 第 3 步：等结果
 
 - agent 会先给你看计划（dry-run），你回复“开始”后它才正式跑。
-- 训练曲线：https://wandb.ai/sw-lmmd/zimage-distill
+- 训练曲线：https://forge.coreweave.com/wandb/sw-lmmd （项目 zimage-distill）
 - 每个实验跑完，agent 会发回一张分数表（Qwen-Image-Bench，越高越好）。
 - 一个实验跑完，再用同样的 prompt 开下一个（只改指南文件名）。

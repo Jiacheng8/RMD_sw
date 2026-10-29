@@ -55,7 +55,7 @@ tmux new -d -s ours "bash z-image/scripts/ours_eight-cards.sh --root /root/rdm-s
 ```
 - 每 500 步存一个 checkpoint（24.6 GB），另有 `resume.pth` 用于续跑。
 - 中断后：同一条命令加 `--resume`。只差评测：加 `--eval-only`。
-- 进度：`tail -n 5 /root/rdm-sets/zimage/work_dirs/zimage-2step-1024/train_log.jsonl`，或 `/root/ours.out` 里的 `step N | force ... | raw_mmd2 ...`。wandb：`wandb.ai/sw-lmmd/zimage-distill`（group `ours`）。
+- 进度：`tail -n 5 /root/rdm-sets/zimage/work_dirs/zimage-2step-1024/train_log.jsonl`，或 `/root/ours.out` 里的 `step N | force ... | raw_mmd2 ...`。wandb：https://forge.coreweave.com/wandb/sw-lmmd ，项目 `zimage-distill`（group `ours`）。
 - 看训练好坏用 `raw_mmd2`（应下降）；`force` 是自归一化后的值，不反映好坏。
 
 ## 结束时
