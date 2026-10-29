@@ -133,6 +133,10 @@ class DMD2Trainer:
         self.student, self.real, self.fake, self.head = student, real, fake, head
         self.gen_opt, self.fake_opt = gen_opt, fake_opt
         self.store, self.latents, self.neg_ctx = store, latents, neg_ctx
+        # the real latents are indexed by prompt id, the contexts by reference row: prompt -> row
+        prompt_of_row = np.asarray(store.prompt_rows(np.arange(store.num_rows)), dtype=np.int64)
+        self._row_of_prompt = np.full(int(prompt_of_row.max()) + 1, -1, dtype=np.int64)
+        self._row_of_prompt[prompt_of_row] = np.arange(prompt_of_row.size)
         self.sigmas, self.renoise = [float(s) for s in sigmas], bool(renoise)
         self.batch, self.ratio, self.guidance = int(batch), int(ratio), float(guidance)
         self.gen_gan, self.guidance_gan = float(gen_gan), float(guidance_gan)
@@ -173,10 +177,15 @@ class DMD2Trainer:
             self.fake(x_t, sigma, caps)
         return self.head(self.fake.features, side=x.shape[-1] // 2)
 
+    def _steps_for(self, chunk: int) -> int:
+        """Backward simulation's random step k for a chunk: the same on every rank (no rank in
+        the seed) -- under FSDP every student step is a collective, so the ranks must agree."""
+        return 1 + int(self._rng(chunk, 1).integers(len(self.sigmas)))
+
     def _rollout(self, rows, chunk: int, with_grad: bool) -> torch.Tensor:
         """Backward simulation: the student to a random step k of its schedule (the earlier ones
         without gradient); returns that step's x0_hat."""
-        k = 1 + int(self._rng(get_rank(), chunk, 1).integers(len(self.sigmas)))
+        k = self._steps_for(chunk)
         noise = row_noise(rows, (len(self.sigmas), *self.latents.shape), seed=self.seed,
                           epoch=self.iteration, device=self.device, dtype=torch.float32)
         args = {"sigmas": self.sigmas[:k], "renoise": self.renoise, "detach_between_steps": True}
@@ -244,7 +253,8 @@ class DMD2Trainer:
             loss_fake = F.mse_loss(out.float(), x - eps)       # flow matching: out = -v = x - eps
             real_ids = self._rng(get_rank(), c, 8).choice(avail, size=n)
             real = self.latents.get(real_ids).to(self.device, torch.float32)
-            lr_ = self._logit(real, self._sig(n, 0.0, 1.0, get_rank(), c, 9), self._ctx(real_ids),
+            lr_ = self._logit(real, self._sig(n, 0.0, 1.0, get_rank(), c, 9),
+                              self._ctx(self._row_of_prompt[real_ids]),
                               self._noise_like(real, get_rank(), c, 10))
             lf = self._logit(x, self._sig(n, 0.0, 1.0, get_rank(), c, 11), caps,
                              self._noise_like(x, get_rank(), c, 12))

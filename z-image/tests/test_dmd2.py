@@ -128,3 +128,22 @@ def test_plan_counts_whole_cycles():
     assert plan_iterations(3600, 2, secs, ratio=5, done=60) == 60
     assert chosen_shards(24)[:3] == [0, 4, 7] and len(chosen_shards(24)) == 24
     assert chosen_shards(24)[-1] == 86 and chosen_shards(1) == [0]
+
+
+def test_backward_simulation_step_is_the_same_on_every_rank(process_root, toy_latents, monkeypatch):  # noqa: F811
+    # under FSDP each student step is a collective: ranks that drew different k would deadlock
+    import zimage_distill.dmd2 as dmd2_mod
+    t = build(process_root, toy_latents[0])
+    ks = []
+    for rank in (0, 1, 3):
+        monkeypatch.setattr(dmd2_mod, "get_rank", lambda r=rank: r)
+        ks.append([t._steps_for(c) for c in range(16)])
+    assert ks[0] == ks[1] == ks[2] and set(ks[0]) == {1, 2}
+
+
+def test_real_prompt_ids_map_to_rows_of_that_prompt(process_root, toy_latents):  # noqa: F811
+    t = build(process_root, toy_latents[0])
+    pids = t.latents.available
+    rows = t._row_of_prompt[pids]
+    assert (rows >= 0).all()
+    np.testing.assert_array_equal(t.store.prompt_rows(rows), pids)
