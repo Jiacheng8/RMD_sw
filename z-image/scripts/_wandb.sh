@@ -2,8 +2,8 @@
 # The logging itself is zimage_distill/wandb_watch.py, a background process that reads the files
 # the run writes -- the run never depends on it. On when a key is there: $WANDB_API_KEY, or
 # `wandb login` done once on the machine (~/.netrc); otherwise asked for at the start on a terminal
-# (Enter = no wandb). WANDB_MODE=disabled turns it off; WANDB_PROJECT (default zimage-distill),
-# WANDB_ENTITY, WANDB_TAGS as usual.
+# (Enter = no wandb). Runs go to the team sw-lmmd (WANDB_ENTITY overrides), project zimage-distill
+# (WANDB_PROJECT overrides); WANDB_MODE=disabled turns it off; WANDB_TAGS as usual.
 WANDB_RUN_DIR=""
 
 wandb_on() {
@@ -29,7 +29,7 @@ wandb_start() {   # wandb_start <run dir> <kind> <gpus> [total steps] [config]
     cd "$REPO" && exec conda run -n "$ENV_NAME" --no-capture-output python -m zimage_distill.wandb_watch \
       "${args[@]}" ) >> "$1/logs/wandb_watch.log" 2>&1 &
   trap wandb_stop EXIT
-  info "wandb       on: project ${WANDB_PROJECT:-zimage-distill}, log $1/logs/wandb_watch.log"
+  info "wandb       on: ${WANDB_ENTITY:-sw-lmmd}/${WANDB_PROJECT:-zimage-distill}, log $1/logs/wandb_watch.log"
 }
 
 wandb_eval() {    # wandb_eval <name> <limit>: this Qwen-Image-Bench run goes to the same wandb run

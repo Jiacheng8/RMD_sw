@@ -37,7 +37,7 @@
 #                   2 tar shards into a smoke-only dir instead)
 # --keep-ckpts      keep the smoke runs' checkpoints
 # W&B: the key is asked for once here (Enter = none; or export WANDB_API_KEY / `wandb login` first);
-# the smoke runs go to the project zimage-distill-smoke (WANDB_PROJECT overrides), tagged smoke
+# the smoke runs go to sw-lmmd/zimage-distill-smoke (WANDB_PROJECT overrides), tagged smoke
 # --fresh           delete <root>/zimage/smoke first (re-run everything of the smoke runs)
 set -uo pipefail
 export PYTHONNOUSERSITE=1
@@ -67,7 +67,7 @@ info() { printf '    %s\n' "$*"; }
 source "$ZDIR/scripts/_wandb.sh"
 wandb_ask
 export WANDB_PROJECT="${WANDB_PROJECT:-zimage-distill-smoke}" WANDB_TAGS="${WANDB_TAGS:-smoke}"
-wandb_on && info "wandb: on, project $WANDB_PROJECT" || info "wandb: off"
+wandb_on && info "wandb: on, ${WANDB_ENTITY:-sw-lmmd}/$WANDB_PROJECT" || info "wandb: off"
 (( FRESH )) && rm -rf "$SMOKE"
 mkdir -p "$LOGS" "$WORK"
 EXP=$(python3 -c "import re,sys; print(re.search(r'^exp_name:\s*(\S+)', open(sys.argv[1]).read(), re.M).group(1))" \

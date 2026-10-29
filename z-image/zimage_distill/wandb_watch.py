@@ -35,6 +35,7 @@ import time
 from pathlib import Path
 
 PROJECT = "zimage-distill"
+ENTITY = "sw-lmmd"                       # the project's W&B team
 SAMPLE_IMAGES = 24
 FACET = {0: 0.0, 1: 60.0, 2: 100.0}          # the bench's Fail / Pass / Excel
 
@@ -103,7 +104,7 @@ class Watcher:
             config["config"] = yaml.safe_load(Path(a.config).read_text())
         tags = [t for t in os.environ.get("WANDB_TAGS", "").split(",") if t] + [a.kind]
         self.run = wandb.init(project=os.environ.get("WANDB_PROJECT", PROJECT),
-                              entity=os.environ.get("WANDB_ENTITY") or None,
+                              entity=os.environ.get("WANDB_ENTITY") or ENTITY,
                               id=self.state.get("id"), resume="allow",
                               name=self.run_dir.name, group=a.kind, tags=tags, config=config,
                               dir=str(self.run_dir))
