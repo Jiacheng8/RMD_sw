@@ -87,6 +87,18 @@ def test_trains_and_writes_ours_checkpoint_format(store_root, packs):  # noqa: F
     assert {"model", "step", "num_steps", "sampling_args"} <= set(state) and state["step"] == 3
 
 
+def test_oom_probe_rolls_out_only_the_first_chunks(store_root, packs):  # noqa: F811
+    t = build(store_root, packs, lr=1e-2)
+    rolled = []
+    real = t._encode
+    t._encode = lambda ids: rolled.append(len(ids)) or real(ids)
+    r = t.oom_probe(real_chunks=2)
+    assert rolled == [1, 1, 1, 1]                       # 2 chunks of 8, pass 1 and pass 2
+    assert r["rows"] == ROWS and r["real_chunks"] == 2 and np.isfinite(r["loss"])
+    assert all(p.grad is None for p in t.generator.model.parameters())
+    assert t.step_idx == 0
+
+
 def test_gpu_time_plan(tmp_path):
     run = tmp_path / "ours"
     run.mkdir()

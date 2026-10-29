@@ -33,13 +33,16 @@
 # --output-dir DIR    where the run dir goes (default <root>/zimage/work_dirs)
 # --checkpoints N     evenly spaced step checkpoints (default 4)
 # --eval-limit N      judge the first N prompts only (a smoke test; named *_limitN)
+# --oom-probe         only test whether a --rows step fits in memory (minutes): every buffer of the
+#                     step at full size, 2 micro-batches really rolled out, one optimizer step;
+#                     prints 'oom-probe: PASS|FAIL' + peak memory per GPU, saves nothing, no eval
 # --resume --eval-only --no-eval --dry-run --micro-batch N --env NAME (rdm)
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$ZDIR/.." && pwd)"
 ROOT="/root/rdm-sets"; GPUS=""; ROWS=10240; MATCH_RUN=""; MATCH_H=""; STEPS=""; RESUME=0
-EVAL_ONLY=0; DO_EVAL=1; DRY=0; MICRO=""; ENV_NAME="rdm"; REF_HF=""; PASS=(); OUT=""; CKPTS=4; EVAL_LIMIT=0
+EVAL_ONLY=0; DO_EVAL=1; DRY=0; MICRO=""; ENV_NAME="rdm"; REF_HF=""; PASS=(); OUT=""; CKPTS=4; EVAL_LIMIT=0; OOM_PROBE=0
 CONFIG="$ZDIR/configs/zimage_2step_1024_h100.yaml"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -59,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --output-dir)      OUT="$2"; shift 2 ;;
     --checkpoints)     CKPTS="$2"; shift 2 ;;
     --eval-limit)      EVAL_LIMIT="$2"; shift 2 ;;
+    --oom-probe)       OOM_PROBE=1; DO_EVAL=0; shift ;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -77,7 +81,8 @@ OURS_RUN="$OURS_OUT/$EXP"
 
 # the budget: ours' run, unless given
 MATCH=()
-if [[ -n "$STEPS" ]]; then MATCH=(--steps "$STEPS")
+if (( OOM_PROBE )); then MATCH=(--oom-probe)
+elif [[ -n "$STEPS" ]]; then MATCH=(--steps "$STEPS")
 elif [[ -n "$MATCH_H" ]]; then MATCH=(--match-gpu-hours "$MATCH_H")
 else
   MATCH_RUN="${MATCH_RUN:-$OURS_RUN}"
@@ -122,7 +127,7 @@ if [[ $EVAL_ONLY -eq 0 ]]; then
   if [[ $RESUME -eq 1 ]]; then
     [[ -f "$RUN/resume.pth" ]] || die "--resume: $RUN/resume.pth does not exist"
     TRAIN+=(--resume "$RUN/resume.pth")
-  elif [[ -s "$RUN/train_log.jsonl" && $DRY -eq 0 ]]; then
+  elif [[ -s "$RUN/train_log.jsonl" && $DRY -eq 0 && $OOM_PROBE -eq 0 ]]; then
     die "$RUN already holds a run. Continue it with --resume, or move it away (mv $RUN{,_old})"
   fi
   if [[ $DRY -eq 1 ]]; then

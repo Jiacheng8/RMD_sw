@@ -218,6 +218,51 @@ class GlobalRDMTrainer:
                 "grad_norm": float(grad_norm) if grad_norm is not None else None,
                 "rows": self.rows_per_step, "rows_per_rank": int(local.size), **logs}
 
+    def oom_probe(self, real_chunks: int = 2) -> dict:
+        """The memory of one full-size step in minutes instead of hours: what a step's size changes
+        is the gathered features and the full-batch loss (the per-row rollout is the micro-batch's,
+        whatever the size). So every buffer of the step is allocated at full size -- every chunk's
+        feature leaves, the gathered N x d features, the N x N repulsion and N x M attraction
+        kernels with their backward, one optimizer step -- but only the first ``real_chunks``
+        micro-batches are rolled out (pass 1 and pass 2); the others reuse their features. The
+        weights it changes are thrown away (nothing is saved)."""
+        local = partition_rows(self.step_rows(self.step_idx))
+        chunks = [local[i:i + self.micro_batch] for i in range(0, local.size, self.micro_batch)]
+        real_chunks = max(1, min(int(real_chunks), len(chunks)))
+        calls, last = [0], {}
+
+        def encode(ci):
+            pos, calls[0] = calls[0] % len(chunks), calls[0] + 1
+            if pos < real_chunks:
+                out = self._encode(ci)
+                last.update({k: v.detach() for k, v in out.items()})
+                return out
+            # a stand-in of the real size: in pass 2 a leaf, so the surrogate backward is a no-op
+            return {k: v.clone().requires_grad_(torch.is_grad_enabled()) for k, v in last.items()}
+
+        cuda = torch.device(self.device).type == "cuda"
+        if cuda:
+            torch.cuda.reset_peak_memory_stats(self.device)
+        t0 = time.time()
+        self.optimizer.zero_grad(set_to_none=True)
+        loss_val, _ = gradcache_backward(chunks, encode, self._loss,
+                                         scale=float(get_world_size()), gather=is_dist())
+        if self.grad_reduce == "mean":
+            for p in self._gen_params:
+                if p.grad is not None:
+                    all_reduce_mean_(p.grad)
+        if self.grad_clip > 0:
+            clip_generator_grads(self._gen_params, self.grad_clip, module=self.clip_module)
+        self.optimizer.step()
+        self.optimizer.zero_grad(set_to_none=True)
+        out = {"rows": self.rows_per_step, "rows_per_rank": int(local.size),
+               "real_chunks": real_chunks, "loss": loss_val, "seconds": time.time() - t0}
+        if cuda:
+            out.update(peak_allocated_gib=torch.cuda.max_memory_allocated(self.device) / 2**30,
+                       peak_reserved_gib=torch.cuda.max_memory_reserved(self.device) / 2**30,
+                       device_gib=torch.cuda.get_device_properties(self.device).total_memory / 2**30)
+        return out
+
     def state_dict(self, with_optimizer: bool) -> dict:
         state = {"model": self.generator.model.state_dict(), "step": self.step_idx,
                  "num_steps": self.num_steps, "objective": "rdm_global",
@@ -343,6 +388,22 @@ def set_horizon(trainer, cfg, total: int) -> None:
     trainer.lr_schedule = sched
 
 
+def oom_probe_main(trainer, real_chunks: int) -> int:
+    """Run ``trainer.oom_probe`` and print one verdict line per rank (``oom-probe: PASS|FAIL``)."""
+    rank = dist.get_rank() if is_dist() else 0
+    try:
+        r = trainer.oom_probe(real_chunks)
+    except torch.cuda.OutOfMemoryError as e:
+        print(f"[rank {rank}] oom-probe: FAIL -- out of memory at {trainer.rows_per_step} rows: "
+              f"{str(e).splitlines()[0]}", flush=True)
+        return 1
+    print(f"[rank {rank}] oom-probe: PASS -- {r['rows']} rows ({r['rows_per_rank']}/rank, "
+          f"{r['real_chunks']} rolled out) | peak allocated {r.get('peak_allocated_gib', 0):.1f} GiB, "
+          f"reserved {r.get('peak_reserved_gib', 0):.1f} of {r.get('device_gib', 0):.1f} GiB | "
+          f"loss {r['loss']:.4f} | {r['seconds']:.0f} s", flush=True)
+    return 0
+
+
 def main() -> int:
     from rdm.sw_lmmd.launch import apply_override
     from rdm.train.launch import load_config
@@ -352,7 +413,7 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("config", help="ours' config (model, memory, lr, encoders, store)")
-    budget = ap.add_mutually_exclusive_group(required=True)
+    budget = ap.add_mutually_exclusive_group()
     budget.add_argument("--match-run", help="ours' run dir: spend the same GPU time")
     budget.add_argument("--match-gpu-hours", type=float, help="spend this many GPU-hours")
     budget.add_argument("--steps", type=int, help="a fixed number of steps")
@@ -367,7 +428,12 @@ def main() -> int:
     ap.add_argument("--checkpoints", type=int, default=4, help="evenly spaced step checkpoints")
     ap.add_argument("--resume", default=None, help="<run>/resume.pth")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    ap.add_argument("--oom-probe", type=int, nargs="?", const=2, default=0, metavar="CHUNKS",
+                    help="only test whether a --rows step fits: every buffer at full size, CHUNKS "
+                         "(default 2) micro-batches really rolled out; minutes, saves nothing")
     a = ap.parse_args()
+    if not (a.oom_probe or a.match_run or a.match_gpu_hours or a.steps):
+        ap.error("one of --match-run / --match-gpu-hours / --steps is required")
     cfg = load_config(a.config)
     for o in a.set:
         apply_override(cfg, o)
@@ -378,9 +444,12 @@ def main() -> int:
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
     run = Path(getattr(cfg, "output_dir", "./work_dirs")) / (
         a.exp_name or f"{getattr(cfg, 'exp_name', 'zimage')}-rdm-global-N{a.rows}")
-    run.mkdir(parents=True, exist_ok=True)
+    if not a.oom_probe:
+        run.mkdir(parents=True, exist_ok=True)
     trainer = build(cfg, a, device)
     sharded = trainer.clip_module is not None
+    if a.oom_probe:
+        return oom_probe_main(trainer, a.oom_probe)
 
     plan_path = run / "plan.json"
     plan = json.loads(plan_path.read_text()) if plan_path.exists() else {}
