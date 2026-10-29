@@ -69,7 +69,7 @@ info() { printf '    %s\n' "$*"; }
 source "$ZDIR/scripts/_wandb.sh"
 wandb_ask
 export WANDB_PROJECT="${WANDB_PROJECT:-zimage-distill-smoke}" WANDB_TAGS="${WANDB_TAGS:-smoke}"
-wandb_on && info "wandb: on, ${WANDB_ENTITY:-sw-lmmd}/$WANDB_PROJECT" || info "wandb: off"
+wandb_on && info "wandb: on, ${WANDB_ENTITY:-sw-lmmd}/$WANDB_PROJECT" || { export WANDB_MODE=disabled; info "wandb: off"; }
 (( FRESH )) && rm -rf "$SMOKE"
 mkdir -p "$LOGS" "$WORK"
 EXP=$(python3 -c "import re,sys; print(re.search(r'^exp_name:\s*(\S+)', open(sys.argv[1]).read(), re.M).group(1))" \

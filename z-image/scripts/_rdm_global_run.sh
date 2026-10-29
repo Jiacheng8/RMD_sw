@@ -37,7 +37,8 @@
 #                     step at full size, 2 micro-batches really rolled out, one optimizer step;
 #                     prints 'oom-probe: PASS|FAIL' + peak memory per GPU, saves nothing, no eval
 # --resume --eval-only --no-eval --dry-run --micro-batch N --env NAME (rdm)
-# W&B (on when a key is there): z-image/scripts/_wandb.sh; WANDB_MODE=disabled turns it off
+# W&B is required: no wandb login (or a refused key / not in sw-lmmd) stops the launcher before
+# anything runs; --no-wandb runs without it (z-image/scripts/_wandb.sh)
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -57,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --eval-only)       EVAL_ONLY=1; shift ;;
     --no-eval)         DO_EVAL=0; shift ;;
     --dry-run)         DRY=1; shift ;;
+    --no-wandb)        export WANDB_MODE=disabled; shift ;;
     --micro-batch)     MICRO="$2"; shift 2 ;;
     --env)             ENV_NAME="$2"; shift 2 ;;
     --ref-hf)          REF_HF="$2"; shift 2 ;;
@@ -90,7 +92,7 @@ else
   MATCH_RUN="${MATCH_RUN:-$OURS_RUN}"
   MATCH=(--match-run "$MATCH_RUN")
 fi
-(( DRY == 0 && OOM_PROBE == 0 )) && wandb_ask
+(( OOM_PROBE == 0 )) && wandb_require "$DRY"
 say "RDM (local-to-global) baseline: $ROWS fresh rows/step on $GPUS GPU(s) -> $RUN"
 info "budget      ${MATCH[*]}"
 if [[ $RESUME -eq 1 && -f "$RUN/plan.json" ]]; then

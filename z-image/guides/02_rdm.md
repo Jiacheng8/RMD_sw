@@ -43,7 +43,7 @@ cd RDM && git log --oneline -1               # 记下 commit
 ```
 - 下文用 `/root/rdm-sets` 作 `--root`、`/root/RDM` 作仓库；大盘是 `/workspace` 就全部换掉。
 - 需要 `conda` 和 NVIDIA 驱动（GPU 云镜像一般都有），环境由脚本自己装。**不需要 HF token**。
-- **wandb**：由用户在交给 agent 之前自己登录（见 `README.md` 第 1 步）。启动后输出里有 `wandb       on: sw-lmmd/...` 就是生效了；`wandb off` 表示没登录（照常训练，只是不记录）——告诉用户即可，不要自己处理。
+- **wandb**：由用户在交给 agent 之前自己登录（见 `README.md` 第 1 步）。脚本**要求** wandb：`--dry-run` 输出里应有 `wandb       login ok: account ...`；如果是 `MISSING` 或 `FAILS`，正式运行会直接停下——这时**不要开始**，把那一行发给用户，等用户登录好再继续。不要自己处理 key，也不要自己加 `--no-wandb`（只有用户明确要求不用 wandb 时才加）。
 
 ## 运行（以 8 卡为例）
 

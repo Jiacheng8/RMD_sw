@@ -37,7 +37,8 @@
 # --checkpoints N     evenly spaced step checkpoints (default 4)
 # --eval-limit N      judge the first N prompts only (a smoke test; named *_limitN)
 # --resume --eval-only --no-eval --dry-run --micro-batch N --env NAME (rdm)
-# W&B (on when a key is there): z-image/scripts/_wandb.sh; WANDB_MODE=disabled turns it off
+# W&B is required: no wandb login (or a refused key / not in sw-lmmd) stops the launcher before
+# anything runs; --no-wandb runs without it (z-image/scripts/_wandb.sh)
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -59,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --eval-only)       EVAL_ONLY=1; shift ;;
     --no-eval)         DO_EVAL=0; shift ;;
     --dry-run)         DRY=1; shift ;;
+    --no-wandb)        export WANDB_MODE=disabled; shift ;;
     --micro-batch)     MICRO="$2"; shift 2 ;;
     --env)             ENV_NAME="$2"; shift 2 ;;
     --batch)           BATCH="$2"; shift 2 ;;
@@ -93,7 +95,7 @@ MATCH=()
 if [[ -n "$ITERS" ]]; then MATCH=(--iterations "$ITERS")
 elif [[ -n "$MATCH_H" ]]; then MATCH=(--match-gpu-hours "$MATCH_H")
 else MATCH_RUN="${MATCH_RUN:-$OURS_OUT/$EXP}"; MATCH=(--match-run "$MATCH_RUN"); fi
-(( DRY == 0 )) && wandb_ask
+wandb_require "$DRY"
 say "DMD2 baseline on $GPUS GPU(s) -> $RUN"
 info "budget      ${MATCH[*]}"
 if [[ $EVAL_ONLY -eq 0 && $RESUME -eq 0 && ${MATCH[0]} == --match-run && $DRY -eq 0 ]]; then

@@ -54,7 +54,8 @@
 # --output-dir DIR --env NAME (rdm) --hf-cache DIR (adopt an existing HF hub cache)
 # --skip-env --skip-download --skip-reference --skip-contexts --no-train --allow-low-disk --dry-run
 # A --gate run saves no checkpoint: stage 7 is skipped for it.
-# W&B (on when a key is there): z-image/scripts/_wandb.sh; WANDB_MODE=disabled turns it off
+# W&B is required: no wandb login (or a refused key / not in sw-lmmd) stops the launcher before
+# anything runs; --no-wandb runs without it (z-image/scripts/_wandb.sh)
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -98,6 +99,7 @@ while [[ $# -gt 0 ]]; do
     --eval-limit)     EVAL_LIMIT="$2"; shift 2 ;;
     --allow-low-disk) ALLOW_LOW_DISK=1; shift ;;
     --dry-run)        DRY=1; shift ;;
+    --no-wandb)       export WANDB_MODE=disabled; shift ;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -123,7 +125,7 @@ source "$ZDIR/scripts/_wandb.sh"
 
 # ---------------------------------------------------------------------------
 say "preflight"
-(( DRY == 0 && (DO_TRAIN || DO_EVAL) )) && wandb_ask
+(( DO_TRAIN || DO_EVAL )) && wandb_require "$DRY"
 info "repo        $REPO ($(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout'))"
 info "root        $ROOT"
 [[ $GATE -eq 1 ]] && DO_EVAL=0                     # a gate run saves no checkpoint to judge

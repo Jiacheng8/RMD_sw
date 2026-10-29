@@ -19,7 +19,7 @@ pip install -q wandb
 wandb login
 ```
 打开 https://wandb.ai/authorize ，复制 key，粘贴进去（屏幕上不显示），回车。
-账号要在 wandb 的 **sw-lmmd** team 里。
+账号要在 wandb 的 **sw-lmmd** team 里。**没登录、key 不对、或不在 team 里，脚本会直接拒绝开始。**
 
 ## 第 2 步：下载代码（每台机器做一次）
 
@@ -45,7 +45,7 @@ git clone -b zimage https://github.com/Jiacheng8/RMD_sw.git /root/RDM
 1. 先完整读一遍指南，严格按里面的规则做。不要修改任何代码，也不要删除 --root 下的数据。
 2. 先运行指南里的 --dry-run，把输出发给我。我确认后再正式开始。
 3. 正式运行放在 tmux 后台。定期汇报：当前阶段、步数、每步耗时、有没有报错；
-   启动后告诉我输出里是 wandb on 还是 wandb off。
+   dry-run 里 wandb 那一行必须是 login ok；不是的话先停下告诉我。
 4. 出错时不要自己改代码或重开实验，把命令、报错和日志最后 30 行发给我。
 5. 结束后把结果表原样发给我。
 </pre>
@@ -73,7 +73,7 @@ Requirements:
 1. Read the whole guide first and follow its rules strictly. Do not modify any code, and do not delete anything under --root.
 2. Run the guide's --dry-run first and send me its output. Start the real run only after I confirm.
 3. Run it in the background in tmux. Report regularly: current stage, step, seconds per step, any errors;
-   after launch, tell me whether the output says wandb on or wandb off.
+   The wandb line of the dry-run must say login ok; if it does not, stop and tell me.
 4. If something fails, do not change the code or restart the experiment yourself. Send me the command, the error and the last 30 lines of the log.
 5. When it finishes, send me the result table exactly as the script printed it.
 </pre>
