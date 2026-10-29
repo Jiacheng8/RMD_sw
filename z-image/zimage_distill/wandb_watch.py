@@ -32,6 +32,7 @@ import math
 import os
 import signal
 import time
+from collections import deque
 from pathlib import Path
 
 PROJECT = "zimage-distill"
@@ -118,6 +119,7 @@ class Watcher:
         self.run.define_metric("eval/minutes")
         self.run.define_metric("eval/*", step_metric="eval/minutes")
         self.offset, self.plan, self.t0 = 0, None, time.time()
+        self.recent = deque(maxlen=20)           # s/step of the last rows, for the ETA
 
     def _save(self):
         tmp = self.state_path.with_suffix(".partial")
@@ -163,6 +165,7 @@ class Watcher:
             sec = row.get("seconds")
             if isinstance(sec, (int, float)):
                 self.state["seconds"] += sec
+                self.recent.append(sec)
                 world = world_of(row, self.a.gpus)
                 m["perf/s_per_step"] = sec
                 m["perf/train_hours"] = self.state["seconds"] / 3600
@@ -170,7 +173,7 @@ class Watcher:
                     m["perf/gpu_hours"] = self.state["seconds"] * world / 3600
                 if total:
                     m["perf/progress"] = step / total
-                    m["perf/eta_hours"] = max(0, total - step) * sec / 3600
+                    m["perf/eta_hours"] = max(0, total - step) * (sum(self.recent) / len(self.recent)) / 3600
             self.run.log(m)
             self.state["last_step"] = step
         if lines:

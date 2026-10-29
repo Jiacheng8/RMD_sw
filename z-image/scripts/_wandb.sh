@@ -4,7 +4,7 @@
 # `wandb login` done once on the machine (~/.netrc); otherwise asked for at the start on a terminal
 # (Enter = no wandb). Runs go to the team sw-lmmd (WANDB_ENTITY overrides), project zimage-distill
 # (WANDB_PROJECT overrides); WANDB_MODE=disabled turns it off; WANDB_TAGS as usual.
-WANDB_RUN_DIR=""
+WANDB_RUN_DIR=""; WANDB_PID=""
 
 wandb_on() {
   [[ "${WANDB_MODE:-}" == disabled ]] && return 1
@@ -28,6 +28,7 @@ wandb_start() {   # wandb_start <run dir> <kind> <gpus> [total steps] [config]
   ( [[ -f "$ROOT/env.sh" ]] && source "$ROOT/env.sh"; export PYTHONPATH="$ZDIR:$REPO:${PYTHONPATH:-}"
     cd "$REPO" && exec conda run -n "$ENV_NAME" --no-capture-output python -m zimage_distill.wandb_watch \
       "${args[@]}" ) >> "$1/logs/wandb_watch.log" 2>&1 &
+  WANDB_PID=$!
   trap wandb_stop EXIT
   info "wandb       on: ${WANDB_ENTITY:-sw-lmmd}/${WANDB_PROJECT:-zimage-distill}, log $1/logs/wandb_watch.log"
 }
@@ -40,7 +41,9 @@ wandb_eval() {    # wandb_eval <name> <limit>: this Qwen-Image-Bench run goes to
 wandb_stop() {    # on exit: a last pass, then wait (<= 3 min) for the upload to finish
   [[ -n "$WANDB_RUN_DIR" ]] || return 0
   touch "$WANDB_RUN_DIR/.wandb_stop"
-  local i; for ((i = 0; i < 180; i++)); do [[ -f "$WANDB_RUN_DIR/.wandb_stop" ]] || break; sleep 1; done
+  local i; for ((i = 0; i < 180; i++)); do kill -0 "$WANDB_PID" 2>/dev/null || break; sleep 1; done
+  rm -f "$WANDB_RUN_DIR/.wandb_stop"
+  grep -h "^\[wandb\] not logging" "$WANDB_RUN_DIR/logs/wandb_watch.log" 2>/dev/null | tail -1 | sed "s/^/    /" || true
   local url; url=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['url'] or '')" \
                    "$WANDB_RUN_DIR/wandb.json" 2>/dev/null) && [[ -n "$url" ]] && info "wandb: $url"
   WANDB_RUN_DIR=""
