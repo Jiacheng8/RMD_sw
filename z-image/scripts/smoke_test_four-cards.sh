@@ -36,6 +36,8 @@
 # --dmd2-latents-hf REPO  DMD2's real latents (default jiachengcui888/zimage-dmd2-latents; '' encodes
 #                   2 tar shards into a smoke-only dir instead)
 # --keep-ckpts      keep the smoke runs' checkpoints
+# W&B: the key is asked for once here (Enter = none; or export WANDB_API_KEY / `wandb login` first);
+# the smoke runs go to the project zimage-distill-smoke (WANDB_PROJECT overrides), tagged smoke
 # --fresh           delete <root>/zimage/smoke first (re-run everything of the smoke runs)
 set -uo pipefail
 export PYTHONNOUSERSITE=1
@@ -62,6 +64,10 @@ ROOT="$(realpath -m "$ROOT")"
 SMOKE="$ROOT/zimage/smoke"; LOGS="$SMOKE/logs"; WORK="$SMOKE/work_dirs"
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
+source "$ZDIR/scripts/_wandb.sh"
+wandb_ask
+export WANDB_PROJECT="${WANDB_PROJECT:-zimage-distill-smoke}" WANDB_TAGS="${WANDB_TAGS:-smoke}"
+wandb_on && info "wandb: on, project $WANDB_PROJECT" || info "wandb: off"
 (( FRESH )) && rm -rf "$SMOKE"
 mkdir -p "$LOGS" "$WORK"
 EXP=$(python3 -c "import re,sys; print(re.search(r'^exp_name:\s*(\S+)', open(sys.argv[1]).read(), re.M).group(1))" \

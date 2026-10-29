@@ -37,6 +37,7 @@
 # --checkpoints N     evenly spaced step checkpoints (default 4)
 # --eval-limit N      judge the first N prompts only (a smoke test; named *_limitN)
 # --resume --eval-only --no-eval --dry-run --micro-batch N --env NAME (rdm)
+# W&B (on when a key is there): z-image/scripts/_wandb.sh; WANDB_MODE=disabled turns it off
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -73,6 +74,7 @@ done
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\n\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+source "$ZDIR/scripts/_wandb.sh"
 [[ -n "$GPUS" ]] || die "--gpus N (use the dmd2_*-cards.sh launchers)"
 (( GPUS >= 4 )) || die "--gpus $GPUS: DMD2 needs 4 or 8 GPUs (three 6 B models)"
 (( BATCH % GPUS == 0 )) || die "--batch $BATCH does not split over $GPUS GPUs"
@@ -91,6 +93,7 @@ MATCH=()
 if [[ -n "$ITERS" ]]; then MATCH=(--iterations "$ITERS")
 elif [[ -n "$MATCH_H" ]]; then MATCH=(--match-gpu-hours "$MATCH_H")
 else MATCH_RUN="${MATCH_RUN:-$OURS_OUT/$EXP}"; MATCH=(--match-run "$MATCH_RUN"); fi
+(( DRY == 0 )) && wandb_ask
 say "DMD2 baseline on $GPUS GPU(s) -> $RUN"
 info "budget      ${MATCH[*]}"
 if [[ $EVAL_ONLY -eq 0 && $RESUME -eq 0 && ${MATCH[0]} == --match-run && $DRY -eq 0 ]]; then
@@ -157,6 +160,7 @@ if [[ $DO_EVAL -eq 1 ]]; then
 fi
 
 # 5 ------------------------------------------------------------------------------------------------
+(( DRY == 0 )) && wandb_start "$RUN" dmd2 "$GPUS" "$ITERS" "$CONFIG"
 if [[ $EVAL_ONLY -eq 0 ]]; then
   say "5/6 training"
   TRAIN=(torchrun --nproc_per_node="$GPUS" --master_port="${MASTER_PORT:-29503}" -m zimage_distill.dmd2 "$CONFIG"
@@ -186,6 +190,7 @@ if [[ $DO_EVAL -eq 1 ]]; then
     it=$(basename "$LAST" .pth); it=$((10#${it#step_}))
     NAME="dmd2_it$it"; LIM=()
     (( EVAL_LIMIT )) && { NAME+="_limit$EVAL_LIMIT"; LIM=(--limit "$EVAL_LIMIT"); }
+    wandb_eval "$NAME" "$EVAL_LIMIT"
     "${EVAL[@]}" --name "$NAME" --ckpt "$LAST" "${LIM[@]}" || die "Qwen-Image-Bench failed on $LAST (re-run with --eval-only)"
     NAMES=("$NAME")
     for d in "$QIB"/runs/*/; do

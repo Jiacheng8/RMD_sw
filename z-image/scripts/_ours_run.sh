@@ -54,6 +54,7 @@
 # --output-dir DIR --env NAME (rdm) --hf-cache DIR (adopt an existing HF hub cache)
 # --skip-env --skip-download --skip-reference --skip-contexts --no-train --allow-low-disk --dry-run
 # A --gate run saves no checkpoint: stage 7 is skipped for it.
+# W&B (on when a key is there): z-image/scripts/_wandb.sh; WANDB_MODE=disabled turns it off
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -117,9 +118,11 @@ warn() { printf '    \033[33mWARNING:\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 smi()  { local i out; for i in 1 2 3; do out=$(nvidia-smi "$@" 2>/dev/null) && { printf '%s\n' "$out"; return 0; }; sleep 3; done; return 1; }
 crun() { conda run -n "$ENV_NAME" --no-capture-output "$@"; }
+source "$ZDIR/scripts/_wandb.sh"
 
 # ---------------------------------------------------------------------------
 say "preflight"
+(( DRY == 0 && (DO_TRAIN || DO_EVAL) )) && wandb_ask
 info "repo        $REPO ($(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout'))"
 info "root        $ROOT"
 [[ $GATE -eq 1 ]] && DO_EVAL=0                     # a gate run saves no checkpoint to judge
@@ -278,6 +281,7 @@ print(get("exp_name"), get("steps"), get("save_freq"))
 PY
 )"
 RUN_DIR="$OUTPUT_DIR/$EXP"
+(( DRY == 0 && (DO_TRAIN || DO_EVAL) )) && wandb_start "$RUN_DIR" ours "$GPUS" "${STEPS:-$CFG_STEPS}" "$CONFIG"
 if [[ $DO_TRAIN -eq 1 ]]; then
   say "stage 6/7: training"
   if [[ $DRY -eq 1 ]]; then
@@ -326,6 +330,7 @@ if [[ $DO_EVAL -eq 1 ]]; then
     NAMES=()
     if (( BASELINES )); then                       # the teacher: judged once per --root
       for t in 9 2; do
+        wandb_eval "turbo$t$SUF" "$EVAL_LIMIT"
         "${EV[@]}" --name "turbo$t$SUF" --teacher-steps "$t" || die "Qwen-Image-Bench failed on the teacher ($t steps)"
         NAMES+=("turbo$t$SUF")
       done
@@ -333,6 +338,7 @@ if [[ $DO_EVAL -eq 1 ]]; then
     for c in "${CKPTS[@]}"; do
       step=$(basename "$c" .pth); step=${step#step_}
       n="${EXP}_s$((10#$step))$SUF"
+      wandb_eval "$n" "$EVAL_LIMIT"
       "${EV[@]}" --name "$n" --ckpt "$c" || die "Qwen-Image-Bench failed on $c (re-run with --eval-only: finished parts are kept)"
       NAMES+=("$n")
     done

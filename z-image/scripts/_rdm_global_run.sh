@@ -37,6 +37,7 @@
 #                     step at full size, 2 micro-batches really rolled out, one optimizer step;
 #                     prints 'oom-probe: PASS|FAIL' + peak memory per GPU, saves nothing, no eval
 # --resume --eval-only --no-eval --dry-run --micro-batch N --env NAME (rdm)
+# W&B (on when a key is there): z-image/scripts/_wandb.sh; WANDB_MODE=disabled turns it off
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -70,6 +71,7 @@ done
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\n\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+source "$ZDIR/scripts/_wandb.sh"
 [[ -n "$GPUS" ]] || die "--gpus N (use the rdm-global_*-cards.sh launchers)"
 (( ROWS % GPUS == 0 )) || die "--rows $ROWS does not split over $GPUS GPUs"
 ROOT="$(realpath -m "$ROOT")"
@@ -88,6 +90,7 @@ else
   MATCH_RUN="${MATCH_RUN:-$OURS_RUN}"
   MATCH=(--match-run "$MATCH_RUN")
 fi
+(( DRY == 0 && OOM_PROBE == 0 )) && wandb_ask
 say "RDM (local-to-global) baseline: $ROWS fresh rows/step on $GPUS GPU(s) -> $RUN"
 info "budget      ${MATCH[*]}"
 if [[ $RESUME -eq 1 && -f "$RUN/plan.json" ]]; then
@@ -118,6 +121,7 @@ if [[ $DO_EVAL -eq 1 ]]; then
 fi
 
 # 3 ------------------------------------------------------------------------------------------------
+(( DRY == 0 && OOM_PROBE == 0 )) && wandb_start "$RUN" rdm-global "$GPUS" "$STEPS" "$CONFIG"
 if [[ $EVAL_ONLY -eq 0 ]]; then
   say "3/4 training"
   TRAIN=(torchrun --nproc_per_node="$GPUS" --master_port="${MASTER_PORT:-29502}" -m zimage_distill.rdm_global
@@ -151,6 +155,7 @@ if [[ $DO_EVAL -eq 1 ]]; then
     step=$(basename "$LAST" .pth); step=$((10#${step#step_}))
     NAME="rdm-global-N${ROWS}_s$step"; LIM=()
     (( EVAL_LIMIT )) && { NAME+="_limit$EVAL_LIMIT"; LIM=(--limit "$EVAL_LIMIT"); }
+    wandb_eval "$NAME" "$EVAL_LIMIT"
     "${EVAL[@]}" --name "$NAME" --ckpt "$LAST" "${LIM[@]}" || die "Qwen-Image-Bench failed on $LAST (re-run with --eval-only)"
     NAMES=("$NAME")
     for d in "$QIB"/runs/*/; do                    # ours and the teacher, when already judged
