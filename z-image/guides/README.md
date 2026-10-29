@@ -21,17 +21,12 @@ git clone -b zimage https://github.com/Jiacheng8/RMD_sw.git /root/RDM
 
 ## 第 2 步：安装 Miniconda3
 
-所有实验统一用 Miniconda3。先看机器上有没有：`conda --version` 能输出版本号就跳过这一步。
+所有实验统一用 Miniconda3。机器上已经有 conda（`conda --version` 能输出版本号）就跳过。
 ```bash
-mkdir -p ~/miniconda3
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
-bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
-rm ~/miniconda3/miniconda.sh
-~/miniconda3/bin/conda init bash
-source ~/.bashrc          # 或者关掉终端重新打开
-conda --version           # 能输出版本号就好了
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
 ```
-项目环境之后由脚本自己装进 Miniconda（约 20 GB，放在 `~/miniconda3` 所在的盘上，确认那块盘有这么多空间）。
+安装时一路回车 / 输入 `yes`，装完关掉终端重新打开。
 
 ## 第 3 步：登录 wandb
 
