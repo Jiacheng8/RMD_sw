@@ -21,15 +21,21 @@ wandb login
 打开 https://wandb.ai/authorize ，复制 key，粘贴进去（屏幕上不显示），回车。
 账号要在 wandb 的 **sw-lmmd** team 里。
 
-## 第 2 步：把下面这段发给 coding agent（Codex / Claude Code）
+## 第 2 步：下载代码（每台机器做一次）
+
+```bash
+git clone -b zimage https://github.com/Jiacheng8/RMD_sw.git /root/RDM
+```
+`/root/RDM` 可以换成别的目录，第 3 步的 prompt 里写同一个。已经 clone 过的话，进去更新一下：`cd /root/RDM && git pull`。
+
+## 第 3 步：把下面这段发给 coding agent（Codex / Claude Code）
 
 <span style="color:#d73a49">**红色的 4 处**</span>改成你的情况，其余不动（在预览里选中复制，不要从源码复制）：
 
 <pre>
 请按照仓库里的实验指南，在这台机器上跑一个实验。
 
-- 仓库：https://github.com/Jiacheng8/RMD_sw.git ，分支 zimage
-- 仓库目录：<span style="color:#d73a49"><b>/root/RDM</b></span> —— 没有就 clone 到这里；已有就 cd 进去 git pull。所有命令都在这个目录下执行
+- 仓库目录：<span style="color:#d73a49"><b>/root/RDM</b></span> —— 代码已经 clone 好（分支 zimage），所有命令都在这个目录下执行
 - 大数据目录（即 --root）：<span style="color:#d73a49"><b>/root/rdm-sets</b></span> —— 模型权重、训练数据、checkpoint、评测结果全部放这里（约 700 GB），不要放到别的盘
 - 实验指南：z-image/guides/<span style="color:#d73a49"><b>01_ours.md</b></span>
 - GPU 数量：<span style="color:#d73a49"><b>8</b></span>
@@ -46,7 +52,7 @@ wandb login
 
 | 要改的地方 | 填什么 |
 |---|---|
-| <span style="color:#d73a49">**仓库目录** `/root/RDM`</span> | 代码放哪（只有几百 MB）。默认 `/root/RDM` |
+| <span style="color:#d73a49">**仓库目录** `/root/RDM`</span> | 第 2 步 clone 到的目录 |
 | <span style="color:#d73a49">**大数据目录** `/root/rdm-sets`</span> | 所有大文件放哪（~700 GB）。默认 `/root/rdm-sets`；先 `df -h` 确认 `/root` 所在的盘有这么大，不够就换成最大的那块盘（比如 `/workspace/rdm-sets`）；**三个实验都用同一个**。（conda 环境装在 conda 自己的目录，另需 ~20 GB） |
 | <span style="color:#d73a49">**实验指南** `01_ours.md`</span> | 第几个实验：`01_ours.md` → `02_rdm.md` → `03_dmd2.md` |
 | <span style="color:#d73a49">**GPU 数量** `8`</span> | 机器上的 GPU 数量 |
@@ -57,8 +63,7 @@ wandb login
 <pre>
 Please run one experiment on this machine by following the experiment guide in the repository.
 
-- Repository: https://github.com/Jiacheng8/RMD_sw.git , branch zimage
-- Repository directory: <span style="color:#d73a49"><b>/root/RDM</b></span> -- clone it here if missing; otherwise cd into it and git pull. Run every command from this directory
+- Repository directory: <span style="color:#d73a49"><b>/root/RDM</b></span> -- the code is already cloned there (branch zimage); run every command from this directory
 - Big-data directory (i.e. --root): <span style="color:#d73a49"><b>/root/rdm-sets</b></span> -- model weights, training data, checkpoints and evaluation results all go here (~700 GB); do not put them on any other disk
 - Experiment guide: z-image/guides/<span style="color:#d73a49"><b>01_ours.md</b></span>
 - Number of GPUs: <span style="color:#d73a49"><b>8</b></span>
@@ -76,7 +81,7 @@ Requirements:
 The guides themselves are in Chinese; Codex and Claude Code read them fine.
 </details>
 
-## 第 3 步：等结果
+## 第 4 步：等结果
 
 - agent 会先给你看计划（dry-run），你回复“开始”后它才正式跑。
 - 训练曲线：https://forge.coreweave.com/wandb/sw-lmmd （项目 zimage-distill）
