@@ -120,6 +120,15 @@ PY
     "$BENCH/backends/ms_swift_backend.py"
   grep -q 'template_type="qwen3_5"' "$BENCH/backends/ms_swift_backend.py" \
     || die "could not pin model_type/template_type in $BENCH/backends/ms_swift_backend.py (upstream changed it?)"
+  # the leaderboard was judged with thinking on (`swift infer --enable_thinking true`), but the
+  # backend's switch (engine.default_template.template_meta.template_kwargs) does not exist in
+  # ms-swift 4.x and is silently skipped: the qwen3_5 template then defaults to NO thinking (an
+  # empty <think></think>, verdicts ~8 points too high). Turn it on where 4.x reads it.
+  grep -q 'self.engine.template.enable_thinking = True' "$BENCH/backends/ms_swift_backend.py" \
+    || sed -i '/TransformersEngine(model_path, max_batch_size=max_batch_size, model_type="qwen3_5", template_type="qwen3_5")$/a\        self.engine.template.enable_thinking = True  # ms-swift 4.x: the switch --enable_thinking sets' \
+       "$BENCH/backends/ms_swift_backend.py"
+  grep -q 'self.engine.template.enable_thinking = True' "$BENCH/backends/ms_swift_backend.py" \
+    || die "could not turn thinking on in $BENCH/backends/ms_swift_backend.py (upstream changed it?)"
   info "done"
   [[ -n "$NAME" ]] || exit 0
 fi
@@ -152,8 +161,29 @@ if [[ $DO_GEN -eq 1 && ! -f "$RUN/input.jsonl" ]]; then
   rdm python -m eval_qib.generate --bench "$BENCH" --out "$RUN" --lang "$LANG_" --limit "$LIMIT" --finalize
 fi
 
+thinking() {   # thinking <judged jsonl>: fails if the judge answered without thinking
+  env -u PYTHONPATH "$ENV/bin/python" "$ZDIR/eval_qib/judge_parallel.py" check-thinking --judged "$1"
+}
+# judged before thinking was turned on (see --setup): set aside, judge again (the images are kept)
+if [[ $DO_JUDGE -eq 1 && -f "$RUN/input_bench_scores.json" ]] && ! thinking "$RUN/input_judged.jsonl" >/dev/null; then
+  OLD="$RUN/judged_without_thinking"
+  info "$NAME was judged without thinking (not the leaderboard's setting): moved to $OLD, judging again"
+  mkdir -p "$OLD"
+  mv "$RUN"/input_judged.* "$RUN"/input_bench_scores.* "$OLD"/ 2>/dev/null || true
+  [[ -f "$RUN/report.md" ]] && mv "$RUN/report.md" "$OLD"/
+  [[ -d "$RUN/shards" ]] && mv "$RUN/shards" "$OLD"/
+  for f in "$RUN"/logs/judge*.log; do [[ -f "$f" ]] && mv "$f" "$OLD"/; done
+fi
+if [[ $DO_JUDGE -eq 1 && -d "$RUN/shards" ]]; then   # finished parts from before the fix, too
+  for f in "$RUN"/shards/part_*_judged.jsonl; do
+    [[ -f "$f" ]] && ! thinking "$f" >/dev/null && { info "$(basename "$f"): judged without thinking, judging again"; rm -f "$f"; }
+  done
+fi
+
 if [[ $DO_JUDGE -eq 1 && ! -f "$RUN/input_bench_scores.json" ]]; then
   [[ -f "$RUN/input.jsonl" ]] || die "$RUN/input.jsonl missing: render first"
+  grep -q 'self.engine.template.enable_thinking = True' "$BENCH/backends/ms_swift_backend.py" \
+    || die "the judge would run without thinking: run --setup again (it patches $BENCH/backends/ms_swift_backend.py)"
   IFS=, read -r -a JG <<< "${JUDGE_GPUS:-$(visible)}"
   # one model copy needs ~55 GB of weights + ~10 GB to work in: 1 x 80 GB card, 3 x 24 GB
   if [[ -z "$PER_JUDGE" ]]; then
@@ -195,6 +225,8 @@ if [[ $DO_JUDGE -eq 1 && ! -f "$RUN/input_bench_scores.json" ]]; then
   fi
   grep -h "Parse failures\|Skipped\|\[merge\]" "$RUN"/logs/judge*.log 2>/dev/null | sed 's/^/    /' || true
   [[ -f "$RUN/input_bench_scores.json" ]] || die "the judge did not finish; see $RUN/logs/judge*.log"
+  thinking "$RUN/input_judged.jsonl" | sed 's/^/    /' \
+    || die "the judge answered without thinking: its scores are not comparable with the leaderboard"
 fi
 
 say "scores"

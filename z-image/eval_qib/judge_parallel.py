@@ -17,6 +17,12 @@ and recomputes the bench scores with ``judge.py``'s own ``compute_bench_scores``
 whose output did not parse is absent there, and a skipped image has none -- so ``<run>/
 input_bench_scores.{json,xlsx}`` are what a single ``judge.py`` run over the whole input writes.
 Run it with the judge env's python (it imports ``judge.py`` from ``--bench``).
+
+    python judge_parallel.py check-thinking --judged <run>/input_judged.jsonl
+
+fails (exit 1) when the judge answered without thinking -- an empty ``<think></think>`` before its
+JSON, as ms-swift 4.x does unless thinking is switched on (eval_qib/run_eval.sh --setup) -- in more
+than ``--max-empty`` of its answers. The leaderboard's answers all reason facet by facet first.
 """
 from __future__ import annotations
 
@@ -57,6 +63,19 @@ def bench_scores(judged_rows: list, judge_module) -> dict:
     return judge_module.compute_bench_scores(per_row)
 
 
+def thought(answer: str) -> bool:
+    """Whether a raw judge answer reasons before its JSON (a non-empty ``<think>`` block)."""
+    head, sep, _ = answer.partition("</think>")
+    return bool(sep) and len(head.replace("<think>", "").strip()) > 0
+
+
+def thinking_stats(judged_rows: list) -> tuple:
+    """(answers, answers without thinking) over every raw ``*_judge_output`` of the rows."""
+    answers = [v for r in judged_rows for k, v in r.items()
+               if k.endswith("_judge_output") and isinstance(v, str) and v]
+    return len(answers), sum(1 for a in answers if not thought(a))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -68,7 +87,20 @@ def main() -> int:
     m.add_argument("--run", type=Path, required=True)
     m.add_argument("--parts", type=int, required=True)
     m.add_argument("--bench", type=Path, required=True)
+    c = sub.add_parser("check-thinking")
+    c.add_argument("--judged", type=Path, required=True)
+    c.add_argument("--max-empty", type=float, default=0.05)
     a = ap.parse_args()
+
+    if a.cmd == "check-thinking":
+        if not a.judged.exists():
+            print(f"[thinking] {a.judged} missing")
+            return 1
+        n, empty = thinking_stats(read_jsonl(a.judged))
+        ok = n > 0 and empty <= a.max_empty * n
+        print(f"[thinking] {n - empty}/{n} judge answers reason before scoring"
+              f"{'' if ok else ' -- judged WITHOUT thinking'}")
+        return 0 if ok else 1
 
     if a.cmd == "split":
         rows = read_jsonl(a.input)
