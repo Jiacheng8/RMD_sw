@@ -15,7 +15,8 @@
 #   3 real data   zimage_distill.dmd2_latents on every GPU: --real-shards of the 87 tar shards of
 #                 jiachengcui888/zimage-turbo-reference (the Turbo renders ours trains with), VAE-encoded
 #                 to latents (24 -> ~34k images, ~18 GB; each tar deleted once encoded) + the empty-
-#                 prompt context for the CFG negative
+#                 prompt context for the CFG negative; with --latents-hf REPO, downloaded instead (~17 GB,
+#                 made once by prepare_dmd2_latents.sh)
 #   4 judge env   eval_qib/run_eval.sh --setup (skipped with --no-eval)
 #   5 train       torchrun -m zimage_distill.dmd2: the official SDXL recipe (batch 128, ratio 5,
 #                 lr 5e-7, GAN 5e-3 / 1e-2, clip 10), real-score guidance 4; the iteration count spends
@@ -31,6 +32,7 @@
 # --guidance G        real-score CFG scale (default 4)
 # --batch N           prompts per iteration (default 128, DMD2's)
 # --latents-dir DIR   where the real latents go (default <root>/zimage/dmd2_latents)
+# --latents-hf REPO   download them from this HF dataset (prepare_dmd2_latents.sh) instead of encoding
 # --output-dir DIR    where the run dir goes (default <root>/zimage/work_dirs)
 # --checkpoints N     evenly spaced step checkpoints (default 4)
 # --eval-limit N      judge the first N prompts only (a smoke test; named *_limitN)
@@ -41,7 +43,7 @@ ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$ZDIR/.." && pwd)"
 ROOT="/root/rdm-sets"; GPUS=""; MATCH_RUN=""; MATCH_H=""; ITERS=""; SHARDS=24; GUIDANCE=4
 RESUME=0; EVAL_ONLY=0; DO_EVAL=1; DRY=0; MICRO=""; ENV_NAME="rdm"
-BATCH=128; LAT=""; OUT=""; CKPTS=4; EVAL_LIMIT=0
+BATCH=128; LAT=""; LAT_HF=""; OUT=""; CKPTS=4; EVAL_LIMIT=0
 CONFIG="$ZDIR/configs/zimage_2step_1024_h100.yaml"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --env)             ENV_NAME="$2"; shift 2 ;;
     --batch)           BATCH="$2"; shift 2 ;;
     --latents-dir)     LAT="$2"; shift 2 ;;
+    --latents-hf)      LAT_HF="$2"; shift 2 ;;
     --output-dir)      OUT="$2"; shift 2 ;;
     --checkpoints)     CKPTS="$2"; shift 2 ;;
     --eval-limit)      EVAL_LIMIT="$2"; shift 2 ;;
@@ -114,9 +117,23 @@ print('    ok ', snapshot_download('Tongyi-MAI/Z-Image', allow_patterns=['model_
   fi
 
 # 3 ------------------------------------------------------------------------------------------------
-  say "3/6 real data: $SHARDS tar shards of Turbo renders -> latents in $LAT"
+  say "3/6 real data: ${LAT_HF:-$SHARDS tar shards of Turbo renders} -> latents in $LAT"
   if [[ -f "$LAT/latents/manifest.json" ]]; then info "present"
-  elif [[ $DRY -eq 1 ]]; then info "would encode on GPUs ${GPU_IDS[*]}, then finalize"
+  elif [[ $DRY -eq 1 ]]; then
+    [[ -n "$LAT_HF" ]] && info "would download $LAT_HF" || info "would encode on GPUs ${GPU_IDS[*]}, then finalize"
+  elif [[ -n "$LAT_HF" ]]; then
+    crun hf download "$LAT_HF" --repo-type dataset --local-dir "$LAT" >/dev/null \
+      || die "could not download $LAT_HF (re-run to resume)"
+    crun python -c "
+import sys
+from zimage_distill.dmd2_latents import Latents
+from zimage_distill.store import read_prompts
+l, n = Latents('$LAT/latents'), len(read_prompts('$PACK/prompts.jsonl'))
+if l.index.shape[0] != n: sys.exit(f'$LAT_HF has latents for {l.index.shape[0]} prompts, the pack {n}')
+x = l.get(l.available[:2]).float()
+assert x.isfinite().all() and x.std() > 0.1, 'latents look wrong'
+print(f'    {l.available.size} latents from $LAT_HF')" || die "the latents of $LAT_HF do not fit this pack"
+    [[ -f "$LAT/negative_context.pt" ]] || die "$LAT_HF has no negative_context.pt"
   else
     mkdir -p "$LAT/logs"; pids=()
     for r in "${!GPU_IDS[@]}"; do
