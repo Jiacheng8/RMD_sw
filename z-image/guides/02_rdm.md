@@ -36,11 +36,12 @@
 代码由用户 clone 好了，不要再 clone。在仓库目录（prompt 给的，下面以 `/root/RDM` 为例）里：
 ```bash
 cd /root/RDM && git pull && git log --oneline -1   # 记下 commit
+conda --version                                    # 用户装好的 Miniconda3
 nvidia-smi                                         # 卡数和 prompt 一致、都是 80 GB、都空闲
 df -h /root/rdm-sets 2>/dev/null || df -h "$(dirname /root/rdm-sets)"   # --root 所在的盘
 ```
 - `--root` 所在的盘剩余空间不到 **~700 GB**，或卡数 / 显存和 prompt 对不上：**先停下告诉用户**，不要开始。
-- 需要 `conda` 和 NVIDIA 驱动（GPU 云镜像一般都有），环境由脚本自己装。**不需要 HF token**。
+- 用户已经装好 Miniconda3（`conda --version` 能用；不能用就停下告诉用户，不要自己装别的 conda）。项目环境由脚本自己装进去。**不需要 HF token**。
 - **wandb**：由用户在交给 agent 之前自己登录（见 `README.md` 第 1 步）。脚本**要求** wandb：`--dry-run` 输出里应有 `wandb       login ok: account ...`；如果是 `MISSING` 或 `FAILS`，正式运行会直接停下——这时**不要开始**，把那一行发给用户，等用户登录好再继续。不要自己处理 key，也不要自己加 `--no-wandb`（只有用户明确要求不用 wandb 时才加）。
 
 ## 运行（以 8 卡为例）
