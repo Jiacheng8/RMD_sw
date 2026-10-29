@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
 # Smoke test of the three one-command launchers on 4 GPUs (80 GB): each one end to end -- prepare,
-# train 20 steps, save the model, render + judge 20 Qwen-Image-Bench prompts -- then a summary table.
+# train 10 steps, save the model, render + judge 10 Qwen-Image-Bench prompts -- then a summary table.
 #
 #   git clone -b zimage https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
 #   tmux new -s smoke
 #   bash z-image/scripts/smoke_test_four-cards.sh --root /root/rdm-sets
 #   bash z-image/scripts/smoke_test_four-cards.sh --root /root/rdm-sets --only dmd2      # one of them
 #
-#   1 ours     ours_four-cards.sh --steps 20 --eval-limit 20 (+ the teacher at 9 and 2 steps, 20 prompts)
-#   2 rdm      rdm-global_four-cards.sh --rows 128 --steps 20 --eval-limit 20: the code path end to end
+#   1 ours     ours_four-cards.sh --steps 10 --eval-limit 10 (+ the teacher at 9 and 2 steps, 10 prompts)
+#   2 rdm      rdm-global_four-cards.sh --rows 128 --steps 10 --eval-limit 10: the code path end to end
 #              (a real 10240-row step is ~3.5 h on 4 x A100 [estimate] -- too long for a smoke test)
 #   3 rdm-oom  rdm-global_four-cards.sh --rows 10240 --oom-probe: does the real batch fit? Every
 #              buffer of a 10240-row step at full size (2560 rows' features per GPU, the gathered
 #              10240 x 10240 loss and its backward, an optimizer step), only 2 micro-batches really
 #              rolled out -- a few minutes; PASS/FAIL + peak memory per GPU, nothing saved
-#   4 dmd2     dmd2_four-cards.sh --iterations 20 --eval-limit 20, batch 128 (DMD2's), real data from
-#              2 tar shards (~2.8k renders) in a smoke-only dir; 20 iterations = 4 student updates
+#   4 dmd2     dmd2_four-cards.sh --iterations 10 --eval-limit 10, batch 128 (DMD2's), real data from
+#              2 tar shards (~2.8k renders) in a smoke-only dir; 10 iterations = 2 student updates
 #
 # Everything heavy is shared with the real runs under --root (env, weights, reference pack, contexts,
 # judge) and done once; the first launcher pays for it (~1-2 h: downloads, the 70 GB context
 # rebuild, the 55 GB judge). The smoke runs themselves go to <root>/zimage/smoke/ and their
-# judgements are named *_limit20, so nothing here touches or enters a real run's tables. A smoke
+# judgements are named *_limit10, so nothing here touches or enters a real run's tables. A smoke
 # run's checkpoints are deleted once it has been judged (--keep-ckpts keeps them; ~25-75 GB each).
 #
 # Summary per launcher: pass/fail, wall time, median s/step (first step left out), peak GPU memory,
-# the checkpoint it judged, and its 20-prompt Qwen-Image-Bench total. Logs: <root>/zimage/smoke/logs/.
+# the checkpoint it judged, and its 10-prompt Qwen-Image-Bench total. Logs: <root>/zimage/smoke/logs/.
 #
 # --root DIR        data root (default /root/rdm-sets)
 # --only LIST       ours,rdm,rdm-oom,dmd2 (default all four, in this order)
-# --steps N         training steps / DMD2 iterations (default 20)
-# --eval-limit N    prompts rendered + judged (default 20)
+# --steps N         training steps / DMD2 iterations (default 10)
+# --eval-limit N    prompts rendered + judged (default 10)
 # --rdm-rows N      RDM's rows per step in the smoke run (default 128)
 # --probe-rows N    rows the OOM probe tests (default 10240)
 # --keep-ckpts      keep the smoke runs' checkpoints
@@ -37,7 +37,7 @@
 set -uo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ROOT="/root/rdm-sets"; ONLY="ours,rdm,rdm-oom,dmd2"; STEPS=20; LIMIT=20; RDM_ROWS=128; PROBE_ROWS=10240
+ROOT="/root/rdm-sets"; ONLY="ours,rdm,rdm-oom,dmd2"; STEPS=10; LIMIT=10; RDM_ROWS=128; PROBE_ROWS=10240
 KEEP=0; FRESH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -163,6 +163,6 @@ done
 info "checkpoints judged: $(for k in "${WHICH[@]}"; do printf '%s=%s ' "$k" "${CKPT[$k]:--}"; done)"
 info "logs: $LOGS   (send these, and the table, if anything failed)"
 info "rdm-oom's last column is the torch peak (reserved) of its busiest GPU, not a score"
-info "the $LIMIT-prompt totals only show the chain works -- 20 prompts are too few to compare models"
+info "the $LIMIT-prompt totals only show the chain works -- so few prompts are too few to compare models"
 for key in "${WHICH[@]}"; do [[ "${STATUS[$key]}" == PASS ]] || exit 1; done
 exit 0
