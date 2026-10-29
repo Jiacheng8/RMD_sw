@@ -114,11 +114,23 @@ class Watcher:
             import yaml
             config["config"] = yaml.safe_load(Path(a.config).read_text())
         tags = [t for t in os.environ.get("WANDB_TAGS", "").split(",") if t] + [a.kind]
-        self.run = wandb.init(project=os.environ.get("WANDB_PROJECT", PROJECT),
+
+        def init(run_id):
+            return wandb.init(project=os.environ.get("WANDB_PROJECT", PROJECT),
                               entity=os.environ.get("WANDB_ENTITY") or ENTITY,
-                              id=self.state.get("id"), resume="allow",
-                              name=self.run_dir.name, group=a.kind, tags=tags, config=config,
-                              dir=str(self.run_dir))
+                              id=run_id, resume="allow", name=self.run_dir.name, group=a.kind,
+                              tags=tags, config=config, dir=str(self.run_dir))
+        try:
+            self.run = init(self.state.get("id"))
+        except Exception as e:
+            if not self.state.get("id") or "deleted" not in str(e):
+                raise
+            # the run was deleted on wandb.ai: start a new one, and send everything again
+            print(f"[wandb] run {self.state['id']} was deleted on wandb.ai: starting a new one",
+                  flush=True)
+            self.state.update(last_step=-1, evals_done=[], ckpts=[], seconds=0.0)
+            self.state.pop("id", None)
+            self.run = init(None)
         self.state["id"] = self.run.id
         self.state["url"] = self.run.url
         self._save()

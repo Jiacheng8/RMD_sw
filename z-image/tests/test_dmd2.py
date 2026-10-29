@@ -10,6 +10,7 @@ import torch.nn as nn
 
 from test_zimage_multistep import CAP_DIM, FakeTransformer, StubText, process_root  # noqa: F401
 from zimage_distill.dmd2 import DMD2Trainer, GANHead, ScoreModel, dmd_loss, plan_iterations
+from rdm.sw_lmmd.sharding import row_noise
 from zimage_distill.dmd2_latents import FORMAT, Latents, chosen_shards
 from zimage_distill.model import LATENT_CHANNELS, ZImageStudent
 from zimage_distill.store import ZImageReferenceStore
@@ -158,3 +159,18 @@ def test_score_model_returns_the_features_it_keeps():
     out, feats = m(x, torch.tensor([0.3, 0.9]), caps, return_features=True)
     assert feats is m.features and out.shape == x.shape
     torch.testing.assert_close(out, m(x, torch.tensor([0.3, 0.9]), caps))
+
+
+def test_rollout_is_the_students_own_k_step_loop(process_root, toy_latents):  # noqa: F811
+    # step k from its re-noised input (earlier steps without autograd) == the student's k steps
+    t = build(process_root, toy_latents[0])
+    rows = np.array([1, 4])
+    for k in (1, 2):
+        t._steps_for = lambda c, k=k: k
+        got = t._rollout(rows, 0, with_grad=True)
+        noise = row_noise(rows, (2, *t.latents.shape), seed=t.seed, epoch=t.iteration,
+                          device="cpu", dtype=torch.float32)
+        want = t.student(noise, t._ctx(rows), {"sigmas": t.sigmas[:k], "renoise": True,
+                                               "detach_between_steps": True})[-1]
+        torch.testing.assert_close(got, want)
+        assert got.requires_grad

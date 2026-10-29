@@ -144,6 +144,8 @@ class DMD2Trainer:
         self._row_of_prompt = np.full(int(prompt_of_row.max()) + 1, -1, dtype=np.int64)
         self._row_of_prompt[prompt_of_row] = np.arange(prompt_of_row.size)
         self.sigmas, self.renoise = [float(s) for s in sigmas], bool(renoise)
+        if not self.renoise:
+            raise ValueError("the DMD2 baseline expects the re-noised student (sampling_args.renoise)")
         self.batch, self.ratio, self.guidance = int(batch), int(ratio), float(guidance)
         self.gen_gan, self.guidance_gan = float(gen_gan), float(guidance_gan)
         self.min_sigma, self.max_sigma = float(min_sigma), float(max_sigma)
@@ -194,9 +196,21 @@ class DMD2Trainer:
         k = self._steps_for(chunk)
         noise = row_noise(rows, (len(self.sigmas), *self.latents.shape), seed=self.seed,
                           epoch=self.iteration, device=self.device, dtype=torch.float32)
-        args = {"sigmas": self.sigmas[:k], "renoise": self.renoise, "detach_between_steps": True}
+        caps = self._ctx(rows)
+        x = noise[:, 0]
+        if k > 1:
+            # steps 1..k-1 without autograd, then step k from its re-noised input: the same values
+            # as the student's own k-step loop (its re-noise detaches), but no graph for the
+            # earlier steps -- under FSDP a block forward with grad whose graph never runs
+            # backward leaves that block's gradient unsharded (bf16), and the next forward fails
+            prev = {"sigmas": self.sigmas[:k - 1], "renoise": True, "detach_between_steps": True}
+            with torch.no_grad(), self._autocast():
+                x0_prev = self.student(noise, caps, prev)[-1].float()
+            s = self.sigmas[k - 1]
+            x = (1.0 - s) * x0_prev + s * noise[:, k - 1]
+        args = {"sigmas": [self.sigmas[k - 1]], "renoise": True, "detach_between_steps": True}
         with torch.set_grad_enabled(with_grad), self._autocast():
-            return self.student(noise, self._ctx(rows), args)[-1].float()
+            return self.student(x.unsqueeze(1), caps, args)[-1].float()
 
     # ---------------------------------------------------------------- one iteration
     def step(self) -> dict:
