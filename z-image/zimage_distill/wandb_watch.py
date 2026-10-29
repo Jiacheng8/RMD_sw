@@ -12,6 +12,8 @@ it reads what is new in the run dir and logs it:
                 cache, s/step: whatever the trainer logs), at wandb step = the training step, so the
                 default x axis is the trainer's own step number (ours and RDM: the optimizer step;
                 DMD2: the iteration); ``train/step`` holds it too
+* ``cache/*``   ours' staleness probe and cache refresh (``*drift*``, ``refresh*``: every
+                ``probe_every`` / refresh steps), in a section of their own
 * ``perf/*``    s/step, elapsed hours, GPU-hours spent, progress and ETA against the planned total
                 (``--total``, else ``plan.json``); the plan itself goes into the run config
 * ``ckpt/step`` each ``step_*.pth`` as it appears
@@ -58,6 +60,12 @@ def flat_numbers(row: dict, prefix: str) -> dict:
         elif isinstance(v, (int, float)) and math.isfinite(v):
             out[prefix + k] = v
     return out
+
+
+def section(key: str) -> str:
+    """W&B section of a trainer log key: the staleness probe / refresh go to ``cache/``."""
+    leaf = key.rsplit("/", 1)[-1]
+    return "cache/" if "drift" in leaf or leaf.startswith("refresh") else "train/"
 
 
 def world_of(row: dict, gpus: int | None):
@@ -116,7 +124,7 @@ class Watcher:
         self._save()
         print(f"[wandb] {self.run.url or 'offline: ' + str(self.run_dir / 'wandb')}", flush=True)
         self.run.define_metric("train/step")
-        for p in ("train/*", "perf/*", "ckpt/*"):
+        for p in ("train/*", "cache/*", "perf/*", "ckpt/*"):
             self.run.define_metric(p, step_metric="train/step")
         self.run.define_metric("eval/minutes")
         self.run.define_metric("eval/*", step_metric="eval/minutes")
@@ -162,7 +170,7 @@ class Watcher:
             step = step_of(row)
             if step is None or step <= self.state["last_step"]:
                 continue
-            m = flat_numbers(row, "train/")
+            m = {section(k) + k: v for k, v in flat_numbers(row, "").items()}
             m["train/step"] = step
             sec = row.get("seconds")
             if isinstance(sec, (int, float)):

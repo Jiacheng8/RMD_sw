@@ -1,7 +1,7 @@
 """The W&B watcher's parsing helpers (no wandb run)."""
 import json
 
-from zimage_distill.wandb_watch import flat_numbers, image_score, step_of, world_of
+from zimage_distill.wandb_watch import flat_numbers, image_score, section, step_of, world_of
 
 
 def test_rows_become_metrics():
@@ -20,3 +20,11 @@ def test_image_score_is_the_mean_facet_score():
            "Alignment": {"Attributes": {"C": {"score": 1}, "D": {"score": "N/A"}}}}
     assert image_score({"judge_model_output": json.dumps(out)}) == (0 + 100 + 60) / 3
     assert image_score({"judge_model_output": ""}) is None
+
+
+def test_probe_and_refresh_keys_get_their_own_section():
+    for k in ("s2/siglip2/drift_mean", "s1/dinov3_l/drift_max", "drift_age_3", "drift_probe_rows",
+              "drift_mean", "refreshed_rows", "refresh_drift_mean"):
+        assert section(k) == "cache/", k
+    for k in ("loss", "force", "raw_mmd2", "s2/siglip2/mmd2", "s2/siglip2/repulsion", "gan/d_acc"):
+        assert section(k) == "train/", k
