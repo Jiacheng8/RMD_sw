@@ -147,3 +147,14 @@ def test_real_prompt_ids_map_to_rows_of_that_prompt(process_root, toy_latents): 
     rows = t._row_of_prompt[pids]
     assert (rows >= 0).all()
     np.testing.assert_array_equal(t.store.prompt_rows(rows), pids)
+
+
+def test_score_model_returns_the_features_it_keeps():
+    # the GAN loss must take the features from the forward's return value (FSDP's root unit
+    # enters its backward through its outputs; a side door left it idle on 4 x A100)
+    m = ScoreModel(ToyDiT(0), feature_layer=1)
+    x = torch.randn(2, LATENT_CHANNELS, LAT, LAT)
+    caps = [torch.randn(3, CAP_DIM), torch.randn(5, CAP_DIM)]
+    out, feats = m(x, torch.tensor([0.3, 0.9]), caps, return_features=True)
+    assert feats is m.features and out.shape == x.shape
+    torch.testing.assert_close(out, m(x, torch.tensor([0.3, 0.9]), caps))

@@ -85,11 +85,17 @@ class ScoreModel(nn.Module):
     def fsdp_unit_types(self) -> set:
         return {type(self.transformer.layers[0])}
 
-    def forward(self, x: torch.Tensor, sigma: torch.Tensor, cap_feats: list) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, sigma: torch.Tensor, cap_feats: list,
+                return_features: bool = False):
+        """``out``; with ``return_features``, ``(out, features)``. A loss on the features must
+        take them from here, not from ``self.features``: under FSDP the root unit (embedders)
+        enters its backward through the tensors its forward returned, and features that reach
+        the loss by a side door would bring gradient to the root's parameters while it is idle."""
         ts = sigma.to(torch.float32) * 1000                          # the pipeline's t, per sample
         t = (1000 - ts) / 1000
         out = self.transformer(list(x.unsqueeze(2).unbind(0)), t, cap_feats, return_dict=False)[0]
-        return torch.stack(out, 0).squeeze(2).to(x.dtype)
+        out = torch.stack(out, 0).squeeze(2).to(x.dtype)
+        return (out, self.features) if return_features else out
 
 
 class GANHead(nn.Module):
@@ -174,8 +180,8 @@ class DMD2Trainer:
     def _logit(self, x: torch.Tensor, sigma: torch.Tensor, caps: list, eps: torch.Tensor):
         x_t = (1 - sigma)[:, None, None, None] * x + sigma[:, None, None, None] * eps
         with self._autocast():
-            self.fake(x_t, sigma, caps)
-        return self.head(self.fake.features, side=x.shape[-1] // 2)
+            _, feats = self.fake(x_t, sigma, caps, return_features=True)
+        return self.head(feats, side=x.shape[-1] // 2)
 
     def _steps_for(self, chunk: int) -> int:
         """Backward simulation's random step k for a chunk: the same on every rank (no rank in
