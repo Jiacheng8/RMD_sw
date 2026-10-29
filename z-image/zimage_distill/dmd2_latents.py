@@ -163,7 +163,9 @@ class Latents:
         self.shape = tuple(self.manifest["shape"])
         self.index = np.load(directory / "index.npy")
         self.available = np.load(directory / "available.npy")
+        # a rank that got no tar shard (fewer shards than GPUs) wrote an empty file: nothing to map
         self.shards = [np.memmap(directory / s, dtype=np.int16, mode="r").reshape(-1, *self.shape)
+                       if (directory / s).stat().st_size else None
                        for s in self.manifest["shards"]]
 
     def get(self, prompt_ids) -> torch.Tensor:

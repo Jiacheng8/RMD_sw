@@ -49,6 +49,8 @@
 # --no-baselines   do not judge the teacher (turbo9, turbo2; each is judged once per --root anyway)
 # --eval-only      stage 7 alone, on the run already in --output-dir (implies --skip-*)
 # --no-eval        skip stages 3 and 7
+# --eval-limit N   judge the first N prompts only (a smoke test; runs are named *_limitN and kept
+#                  out of the comparison tables)
 # --output-dir DIR --env NAME (rdm) --hf-cache DIR (adopt an existing HF hub cache)
 # --skip-env --skip-download --skip-reference --skip-contexts --no-train --allow-low-disk --dry-run
 # A --gate run saves no checkpoint: stage 7 is skipped for it.
@@ -67,7 +69,7 @@ ROOT="/root/rdm-sets"; REF_HF=""; REF_NAME="zimage-ref-v1"; GPUS=""
 CONFIG="$ZDIR/configs/zimage_2step_1024_h100.yaml"; ENV_NAME="rdm"; HF_CACHE=""; OUTPUT_DIR=""
 STEPS=""; GATE=0; RESUME=0; DRY=0; ALLOW_LOW_DISK=0; MICRO=""
 DO_ENV=1; DO_DOWNLOAD=1; DO_REFERENCE=1; DO_CONTEXTS=1; DO_TRAIN=1; DO_EVAL=1
-EVAL_CKPTS="last"; BASELINES=1; EVAL_ONLY=0
+EVAL_CKPTS="last"; BASELINES=1; EVAL_ONLY=0; EVAL_LIMIT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root)           ROOT="$2"; shift 2 ;;
@@ -91,6 +93,7 @@ while [[ $# -gt 0 ]]; do
     --eval-ckpts)     EVAL_CKPTS="$2"; shift 2 ;;
     --no-baselines)   BASELINES=0; shift ;;
     --eval-only)      EVAL_ONLY=1; shift ;;
+    --eval-limit)     EVAL_LIMIT="$2"; shift 2 ;;
     --allow-low-disk) ALLOW_LOW_DISK=1; shift ;;
     --dry-run)        DRY=1; shift ;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -312,6 +315,7 @@ if [[ $DO_EVAL -eq 1 ]]; then
   say "stage 7/7: Qwen-Image-Bench on GPUs ${GPU_IDS[*]:-?}"
   ALL_GPUS="$(IFS=,; echo "${GPU_IDS[*]}")"
   EV=("${EVAL[@]}" --gen-gpus "$ALL_GPUS" --judge-gpus "$ALL_GPUS")
+  SUF=""; (( EVAL_LIMIT )) && { EV+=(--limit "$EVAL_LIMIT"); SUF="_limit$EVAL_LIMIT"; }
   if [[ $DRY -eq 1 ]]; then
     info "would judge: $EVAL_CKPTS checkpoint(s) of $RUN_DIR$( (( BASELINES )) && echo ', turbo9, turbo2')"
     info "  e.g. ${EV[*]} --name ${EXP}_sNNNNNNN --ckpt $RUN_DIR/step_NNNNNNN.pth"
@@ -322,13 +326,13 @@ if [[ $DO_EVAL -eq 1 ]]; then
     NAMES=()
     if (( BASELINES )); then                       # the teacher: judged once per --root
       for t in 9 2; do
-        "${EV[@]}" --name "turbo$t" --teacher-steps "$t" || die "Qwen-Image-Bench failed on the teacher ($t steps)"
-        NAMES+=("turbo$t")
+        "${EV[@]}" --name "turbo$t$SUF" --teacher-steps "$t" || die "Qwen-Image-Bench failed on the teacher ($t steps)"
+        NAMES+=("turbo$t$SUF")
       done
     fi
     for c in "${CKPTS[@]}"; do
       step=$(basename "$c" .pth); step=${step#step_}
-      n="${EXP}_s$((10#$step))"
+      n="${EXP}_s$((10#$step))$SUF"
       "${EV[@]}" --name "$n" --ckpt "$c" || die "Qwen-Image-Bench failed on $c (re-run with --eval-only: finished parts are kept)"
       NAMES+=("$n")
     done

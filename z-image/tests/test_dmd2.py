@@ -60,8 +60,10 @@ def toy_latents(tmp_path):
     index[available] = np.stack([np.zeros(available.size, dtype=np.int64), np.arange(available.size)], 1)
     np.save(d / "index.npy", index)
     np.save(d / "available.npy", available)
+    (d / "shard_01.bin").write_bytes(b"")           # a rank that got no tar shard
     (d / "manifest.json").write_text(json.dumps({"format": FORMAT, "shape": [LATENT_CHANNELS, LAT, LAT],
-                                                 "dtype": "bfloat16", "shards": ["shard_00.bin"]}))
+                                                 "dtype": "bfloat16",
+                                                 "shards": ["shard_00.bin", "shard_01.bin"]}))
     return Latents(d), data
 
 

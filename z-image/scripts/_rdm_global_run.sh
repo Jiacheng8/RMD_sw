@@ -30,13 +30,16 @@
 # --match-run DIR     ours' run dir (default: the one under --root, if it has a train_log.jsonl)
 # --match-gpu-hours H the budget in GPU-hours instead (e.g. ours' printed wall time x its GPUs)
 # --steps N           a fixed step count instead of a budget
+# --output-dir DIR    where the run dir goes (default <root>/zimage/work_dirs)
+# --checkpoints N     evenly spaced step checkpoints (default 4)
+# --eval-limit N      judge the first N prompts only (a smoke test; named *_limitN)
 # --resume --eval-only --no-eval --dry-run --micro-batch N --env NAME (rdm)
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$ZDIR/.." && pwd)"
 ROOT="/root/rdm-sets"; GPUS=""; ROWS=10240; MATCH_RUN=""; MATCH_H=""; STEPS=""; RESUME=0
-EVAL_ONLY=0; DO_EVAL=1; DRY=0; MICRO=""; ENV_NAME="rdm"; REF_HF=""; PASS=()
+EVAL_ONLY=0; DO_EVAL=1; DRY=0; MICRO=""; ENV_NAME="rdm"; REF_HF=""; PASS=(); OUT=""; CKPTS=4; EVAL_LIMIT=0
 CONFIG="$ZDIR/configs/zimage_2step_1024_h100.yaml"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,6 +56,9 @@ while [[ $# -gt 0 ]]; do
     --micro-batch)     MICRO="$2"; shift 2 ;;
     --env)             ENV_NAME="$2"; shift 2 ;;
     --ref-hf)          REF_HF="$2"; shift 2 ;;
+    --output-dir)      OUT="$2"; shift 2 ;;
+    --checkpoints)     CKPTS="$2"; shift 2 ;;
+    --eval-limit)      EVAL_LIMIT="$2"; shift 2 ;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -64,10 +70,10 @@ die()  { printf '\n\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 (( ROWS % GPUS == 0 )) || die "--rows $ROWS does not split over $GPUS GPUs"
 ROOT="$(realpath -m "$ROOT")"
 ZROOT="$ROOT/zimage"; PACK="$ZROOT/zimage-ref-v1"; STORE="$PACK/reference_store"
-OUT="$ZROOT/work_dirs"; QIB="$ROOT/qib"
+OURS_OUT="$ZROOT/work_dirs"; OUT="$(realpath -m "${OUT:-$OURS_OUT}")"; QIB="$ROOT/qib"
 EXP=$(python3 -c "import re,sys; print(re.search(r'^exp_name:\s*(\S+)', open(sys.argv[1]).read(), re.M).group(1))" "$CONFIG")
 RUN="$OUT/$EXP-rdm-global-N$ROWS"
-OURS_RUN="$OUT/$EXP"
+OURS_RUN="$OURS_OUT/$EXP"
 
 # the budget: ours' run, unless given
 MATCH=()
@@ -110,7 +116,8 @@ fi
 if [[ $EVAL_ONLY -eq 0 ]]; then
   say "3/4 training"
   TRAIN=(torchrun --nproc_per_node="$GPUS" --master_port="${MASTER_PORT:-29502}" -m zimage_distill.rdm_global
-         "$CONFIG" --rows "$ROWS" "${MATCH[@]}" --set "reference_root=$STORE" --set "output_dir=$OUT")
+         "$CONFIG" --rows "$ROWS" "${MATCH[@]}" --checkpoints "$CKPTS"
+         --set "reference_root=$STORE" --set "output_dir=$OUT")
   [[ -n "$MICRO" ]] && TRAIN+=(--micro-batch "$MICRO")
   if [[ $RESUME -eq 1 ]]; then
     [[ -f "$RUN/resume.pth" ]] || die "--resume: $RUN/resume.pth does not exist"
@@ -137,8 +144,9 @@ if [[ $DO_EVAL -eq 1 ]]; then
     LAST=$(find "$RUN" -maxdepth 1 -name 'step_*.pth' | sort | tail -1)
     [[ -n "$LAST" ]] || die "no step_*.pth in $RUN to evaluate"
     step=$(basename "$LAST" .pth); step=$((10#${step#step_}))
-    NAME="rdm-global-N${ROWS}_s$step"
-    "${EVAL[@]}" --name "$NAME" --ckpt "$LAST" || die "Qwen-Image-Bench failed on $LAST (re-run with --eval-only)"
+    NAME="rdm-global-N${ROWS}_s$step"; LIM=()
+    (( EVAL_LIMIT )) && { NAME+="_limit$EVAL_LIMIT"; LIM=(--limit "$EVAL_LIMIT"); }
+    "${EVAL[@]}" --name "$NAME" --ckpt "$LAST" "${LIM[@]}" || die "Qwen-Image-Bench failed on $LAST (re-run with --eval-only)"
     NAMES=("$NAME")
     for d in "$QIB"/runs/*/; do                    # ours and the teacher, when already judged
       n=$(basename "$d")
