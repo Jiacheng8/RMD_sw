@@ -4,8 +4,8 @@
 #
 #   git clone -b zimage https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
 #   tmux new -s smoke
-#   bash z-image/scripts/smoke_test_four-cards.sh --root /root/rdm-sets              # dmd2 only (for now)
-#   bash z-image/scripts/smoke_test_four-cards.sh --root /root/rdm-sets --only ours,rdm,rdm-oom,dmd2   # all four
+#   bash z-image/scripts/smoke_test_four-cards.sh --root /root/rdm-sets
+#   bash z-image/scripts/smoke_test_four-cards.sh --root /root/rdm-sets --only dmd2      # one of them
 #
 #   1 ours     ours_four-cards.sh --steps 10 --eval-limit 10
 #   2 rdm      rdm-global_four-cards.sh --rows 128 --steps 10 --eval-limit 10: the code path end to end
@@ -28,8 +28,7 @@
 # the checkpoint it judged, and its 10-prompt Qwen-Image-Bench total. Logs: <root>/zimage/smoke/logs/.
 #
 # --root DIR        data root (default /root/rdm-sets)
-# --only LIST       ours,rdm,rdm-oom,dmd2, in this order (default for now: dmd2 -- ours, rdm and
-#                   rdm-oom were run on 4 x A100; DMD2 is being re-tested after its FSDP fixes)
+# --only LIST       ours,rdm,rdm-oom,dmd2 (default all four, in this order)
 # --steps N         training steps / DMD2 iterations (default 10)
 # --eval-limit N    prompts rendered + judged (default 10)
 # --rdm-rows N      RDM's rows per step in the smoke run (default 128)
@@ -43,8 +42,7 @@
 set -uo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# ONLY="ours,rdm,rdm-oom,dmd2"     # all four -- back to this once DMD2 passes
-ROOT="/root/rdm-sets"; ONLY="dmd2"; STEPS=10; LIMIT=10; RDM_ROWS=128; PROBE_ROWS=10240
+ROOT="/root/rdm-sets"; ONLY="ours,rdm,rdm-oom,dmd2"; STEPS=10; LIMIT=10; RDM_ROWS=128; PROBE_ROWS=10240
 DMD2_LAT_HF="jiachengcui888/zimage-dmd2-latents"
 KEEP=0; FRESH=0
 while [[ $# -gt 0 ]]; do
