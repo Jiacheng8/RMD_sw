@@ -19,7 +19,7 @@
    tmux ls                         # 还在不在跑
    ```
    不要因为“好像没动”就杀进程：先 `nvidia-smi`，GPU-Util 接近 100% 就是在算。
-4. **开始前先问齐用户**：下面「开始前要问的」那张表。agent 的 shell 不是交互终端，脚本不会弹输入框，wandb key 只能用环境变量传。
+4. **开始前先问齐用户**：下面「开始前要问的」那张表。wandb 不用你管：用户已经在机器上登录过（`~/.netrc`），脚本会自动读取；**不要向用户要 key，也不要处理 key**。
 5. **不要删除** `--root` 下的任何东西，除非用户明确同意。
 6. **失败了先重跑同一条命令**：已完成的阶段会自动跳过；训练中断加 `--resume`。
 7. **结束时**把脚本最后打印的结果表原样交给用户。
@@ -30,7 +30,6 @@
 |---|---|
 | 几张卡？ | 8 → `ours_eight-cards.sh`；4 → `ours_four-cards.sh`；2 → `ours_two-cards.sh` |
 | 先 `--gate` 测速度吗？ | 推荐：准备 + 20 步，看显存和 s/step，不评测 |
-| wandb key | 可选，sw-lmmd team 成员的 key |
 | `--root` 放哪 | 空间最大的盘，默认 `/root/rdm-sets` |
 
 ## 机器准备（每台新机器一次）
@@ -44,7 +43,7 @@ cd RDM && git log --oneline -1               # 记下 commit
 ```
 - 下文用 `/root/rdm-sets` 作 `--root`、`/root/RDM` 作仓库；大盘是 `/workspace` 就全部换掉。
 - 需要 `conda` 和 NVIDIA 驱动（GPU 云镜像一般都有），环境由脚本自己装。**不需要 HF token**。
-- **wandb（可选）**：把 key 写进 tmux 命令（`export WANDB_API_KEY=<key>; ...`），或在环境装好后登录一次 `conda run -n rdm wandb login <key>`。key 要属于 **sw-lmmd** team 成员（https://wandb.ai/authorize）。不给 key 也照常跑，只是不记 wandb。
+- **wandb**：由用户在交给 agent 之前自己登录（见 `README.md` 第 1 步）。启动后输出里有 `wandb       on: sw-lmmd/...` 就是生效了；`wandb off` 表示没登录（照常训练，只是不记录）——告诉用户即可，不要自己处理。
 
 ## 运行（以 8 卡为例）
 
@@ -52,7 +51,7 @@ cd RDM && git log --oneline -1               # 记下 commit
 cd /root/RDM
 bash z-image/scripts/ours_eight-cards.sh --root /root/rdm-sets --dry-run          # 只检查，什么都不改
 tmux new -d -s gate "bash z-image/scripts/ours_eight-cards.sh --root /root/rdm-sets --gate 2>&1 | tee /root/gate.out"   # 可选
-tmux new -d -s ours "export WANDB_API_KEY=<key>; bash z-image/scripts/ours_eight-cards.sh --root /root/rdm-sets 2>&1 | tee /root/ours.out"
+tmux new -d -s ours "bash z-image/scripts/ours_eight-cards.sh --root /root/rdm-sets 2>&1 | tee /root/ours.out"
 ```
 - 每 500 步存一个 checkpoint（24.6 GB），另有 `resume.pth` 用于续跑。
 - 中断后：同一条命令加 `--resume`。只差评测：加 `--eval-only`。
