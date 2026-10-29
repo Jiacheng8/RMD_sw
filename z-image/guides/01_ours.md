@@ -19,29 +19,27 @@
    tmux ls                         # 还在不在跑
    ```
    不要因为“好像没动”就杀进程：先 `nvidia-smi`，GPU-Util 接近 100% 就是在算。
-4. **开始前先问齐用户**：下面「开始前要问的」那张表。wandb 不用你管：用户已经在机器上登录过（`~/.netrc`），脚本会自动读取；**不要向用户要 key，也不要处理 key**。
+4. **用 prompt 给的设置**：用户的 prompt 里给了仓库目录、大数据目录（`--root`）和 GPU 数。下文命令里的 `/root/RDM`、`/root/rdm-sets` 一律换成 prompt 里的值，脚本按 GPU 数选；prompt 没给的才问用户。wandb 不用你管：用户已经登录过，**不要向用户要 key，也不要处理 key**。
 5. **不要删除** `--root` 下的任何东西，除非用户明确同意。
 6. **失败了先重跑同一条命令**：已完成的阶段会自动跳过；训练中断加 `--resume`。
 7. **结束时**把脚本最后打印的结果表原样交给用户。
 
-## 开始前要问的
+## 开始前确认
 
-| 问题 | 默认 / 说明 |
+| 什么 | 怎么定 |
 |---|---|
-| 几张卡？ | 8 → `ours_eight-cards.sh`；4 → `ours_four-cards.sh`；2 → `ours_two-cards.sh` |
-| 先 `--gate` 测速度吗？ | 推荐：准备 + 20 步，看显存和 s/step，不评测 |
-| `--root` 放哪 | 空间最大的盘，默认 `/root/rdm-sets` |
+| 用哪个脚本 | 按 prompt 的 GPU 数： 8 → `ours_eight-cards.sh`；4 → `ours_four-cards.sh`；2 → `ours_two-cards.sh` |
+| 先 `--gate` 吗 | 只有用户要求时：准备 + 20 步，看显存和 s/step，不评测 |
 
-## 机器准备（每台新机器一次）
+## 检查机器（开始前）
 
+代码由用户 clone 好了，不要再 clone。在仓库目录（prompt 给的，下面以 `/root/RDM` 为例）里：
 ```bash
-nvidia-smi                                   # 卡型号、数量、是否空闲（要 80 GB 的卡）
-df -h / /root /workspace 2>/dev/null         # 选空间最大的盘放 --root
-cd /root                                     # 或大盘所在目录
-git clone -b zimage https://github.com/Jiacheng8/RMD_sw.git RDM   # 已经有就 cd RDM && git pull
-cd RDM && git log --oneline -1               # 记下 commit
+cd /root/RDM && git pull && git log --oneline -1   # 记下 commit
+nvidia-smi                                         # 卡数和 prompt 一致、都是 80 GB、都空闲
+df -h /root/rdm-sets 2>/dev/null || df -h "$(dirname /root/rdm-sets)"   # --root 所在的盘
 ```
-- 下文用 `/root/rdm-sets` 作 `--root`、`/root/RDM` 作仓库；大盘是 `/workspace` 就全部换掉。
+- `--root` 所在的盘剩余空间不到 **~700 GB**，或卡数 / 显存和 prompt 对不上：**先停下告诉用户**，不要开始。
 - 需要 `conda` 和 NVIDIA 驱动（GPU 云镜像一般都有），环境由脚本自己装。**不需要 HF token**。
 - **wandb**：由用户在交给 agent 之前自己登录（见 `README.md` 第 1 步）。脚本**要求** wandb：`--dry-run` 输出里应有 `wandb       login ok: account ...`；如果是 `MISSING` 或 `FAILS`，正式运行会直接停下——这时**不要开始**，把那一行发给用户，等用户登录好再继续。不要自己处理 key，也不要自己加 `--no-wandb`（只有用户明确要求不用 wandb 时才加）。
 
