@@ -2,7 +2,7 @@
 # Z-Image-Turbo -> 2-step student on a fresh machine, in one command: conda env, downloads (Z-Image-
 # Turbo + the 3 encoders), the Qwen-Image-Bench judge env, the reference pack from a Hugging Face
 # dataset, the Qwen3 contexts rebuilt on every GPU, training (z-image/configs/zimage_2step_1024_h100.yaml),
-# then Qwen-Image-Bench on the last checkpoint and on the teacher (z-image/eval_qib).
+# then Qwen-Image-Bench on the last checkpoint (z-image/eval_qib; the teacher only with --baselines).
 #
 # This is the shared body of the launchers ours_two-cards.sh, ours_four-cards.sh and
 # ours_eight-cards.sh, which fix --gpus and the reference pack; run one of those:
@@ -27,8 +27,8 @@
 #                length-bucketed (~70 GB, minutes on 2 x H100) -> <root>/zimage/<ref-name>/contexts/
 #   6 train      z-image/scripts/train.sh             FSDP over --gpus cards -> <root>/zimage/work_dirs
 #   7 eval       eval_qib/run_eval.sh                 Qwen-Image-Bench (1000 prompts, 1 image each) on
-#                                                     the last checkpoint, and once on the teacher at
-#                                                     9 and 2 steps; one judge copy per 80 GB card in
+#                                                     the last checkpoint (+ the teacher at 9 and 2
+#                                                     steps with --baselines); one judge copy per 80 GB card in
 #                                                     parallel (~40 min per model on 2 x H100)
 #                                                     -> <root>/qib/runs/, table <run dir>/qwen_image_bench.md
 #
@@ -46,7 +46,7 @@
 # --steps N        override the config's steps
 # --resume         continue the run from its resume.pth (skips stages 1, 2, 4, 5)
 # --eval-ckpts W   which checkpoints stage 7 judges: last (default) | all (every step_*.pth)
-# --no-baselines   do not judge the teacher (turbo9, turbo2; each is judged once per --root anyway)
+# --baselines      also judge the teacher (turbo9, turbo2); off by default -- evaluate-baseline.sh does it
 # --eval-only      stage 7 alone, on the run already in --output-dir (implies --skip-*)
 # --no-eval        skip stages 3 and 7
 # --eval-limit N   judge the first N prompts only (a smoke test; runs are named *_limitN and kept
@@ -70,7 +70,7 @@ ROOT="/root/rdm-sets"; REF_HF=""; REF_NAME="zimage-ref-v1"; GPUS=""
 CONFIG="$ZDIR/configs/zimage_2step_1024_h100.yaml"; ENV_NAME="rdm"; HF_CACHE=""; OUTPUT_DIR=""
 STEPS=""; GATE=0; RESUME=0; DRY=0; ALLOW_LOW_DISK=0; MICRO=""
 DO_ENV=1; DO_DOWNLOAD=1; DO_REFERENCE=1; DO_CONTEXTS=1; DO_TRAIN=1; DO_EVAL=1
-EVAL_CKPTS="last"; BASELINES=1; EVAL_ONLY=0; EVAL_LIMIT=0
+EVAL_CKPTS="last"; BASELINES=0; EVAL_ONLY=0; EVAL_LIMIT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root)           ROOT="$2"; shift 2 ;;
@@ -92,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --no-train)       DO_TRAIN=0; shift ;;
     --no-eval)        DO_EVAL=0; shift ;;
     --eval-ckpts)     EVAL_CKPTS="$2"; shift 2 ;;
+    --baselines)      BASELINES=1; shift ;;
     --no-baselines)   BASELINES=0; shift ;;
     --eval-only)      EVAL_ONLY=1; shift ;;
     --eval-limit)     EVAL_LIMIT="$2"; shift 2 ;;

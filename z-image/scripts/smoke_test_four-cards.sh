@@ -7,7 +7,7 @@
 #   bash z-image/scripts/smoke_test_four-cards.sh --root /root/rdm-sets              # dmd2 only (for now)
 #   bash z-image/scripts/smoke_test_four-cards.sh --root /root/rdm-sets --only ours,rdm,rdm-oom,dmd2   # all four
 #
-#   1 ours     ours_four-cards.sh --steps 10 --eval-limit 10 (+ the teacher at 9 and 2 steps, 10 prompts)
+#   1 ours     ours_four-cards.sh --steps 10 --eval-limit 10
 #   2 rdm      rdm-global_four-cards.sh --rows 128 --steps 10 --eval-limit 10: the code path end to end
 #              (a real 10240-row step is ~3.5 h on 4 x A100 [estimate] -- too long for a smoke test)
 #   3 rdm-oom  rdm-global_four-cards.sh --rows 10240 --oom-probe: does the real batch fit? Every

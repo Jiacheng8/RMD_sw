@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Ours on a fresh 4-GPU machine, in one command: Z-Image-Turbo (8-step teacher) -> 2-step student,
 # SW-LMMD with one MMD + one GAN critic per student step, 1024 px, the public reference pack
-# jiachengcui888/zimage-ref-v1, then Qwen-Image-Bench on the last checkpoint and on the teacher.
+# jiachengcui888/zimage-ref-v1, then Qwen-Image-Bench on the last checkpoint.
 #
 #   git clone -b zimage https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
 #   tmux new -s train

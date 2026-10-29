@@ -62,7 +62,7 @@ tmux new -d -s rdm "export WANDB_API_KEY=<key>; bash z-image/scripts/rdm-global_
 ## 结束时
 
 - 输出目录：`/root/rdm-sets/zimage/work_dirs/zimage-2step-1024-rdm-global-N10240/`。
-- 对比表：该目录下 `qwen_image_bench.md`（会同时列出已经评过的 ours 和 teacher），**交给用户**。
+- 对比表：该目录下 `qwen_image_bench.md`（会同时列出已经评过的 ours，以及评过的 teacher），**交给用户**。
 
 ## 出问题时
 

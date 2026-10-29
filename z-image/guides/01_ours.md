@@ -1,6 +1,6 @@
 # 实验 1：正式训练 ours（SW-LMMD，2 步 student）
 
-**目的**：主方法。Z-Image-Turbo（8 步）→ 2 步 student，1024 px，每个 student step 一个 MMD + 一个 GAN critic，2000 步；结束后自动在 Qwen-Image-Bench（1000 prompt）上评最后一个 checkpoint，以及 teacher 9 步 / 2 步。
+**目的**：主方法。Z-Image-Turbo（8 步）→ 2 步 student，1024 px，每个 student step 一个 MMD + 一个 GAN critic，2000 步；结束后自动在 Qwen-Image-Bench（1000 prompt）上评最后一个 checkpoint（不评 teacher，teacher 由用户自己评）。
 
 **必须在实验 2（RDM，`02_rdm.md`）和 3（DMD2，`03_dmd2.md`）之前跑**：它们读这个 run 的日志来花同样多的 GPU 时间。三个实验最好在同一台机器、同一个 `--root` 上做。
 
@@ -61,7 +61,7 @@ tmux new -d -s ours "export WANDB_API_KEY=<key>; bash z-image/scripts/ours_eight
 
 ## 结束时
 
-- 对比表：`/root/rdm-sets/zimage/work_dirs/zimage-2step-1024/qwen_image_bench.md`（ours 最后一步、turbo9、turbo2），**交给用户**。
+- 对比表：`/root/rdm-sets/zimage/work_dirs/zimage-2step-1024/qwen_image_bench.md`（ours 最后一步；已评过的 teacher 也会列进去），**交给用户**。
 - 告诉用户：可以接着在同一个 `--root` 上做实验 2、3。
 
 ## 出问题时
