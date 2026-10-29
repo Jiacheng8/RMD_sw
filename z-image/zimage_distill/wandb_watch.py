@@ -9,8 +9,9 @@ start it in the background next to the run and stop it when they exit. Every ``-
 it reads what is new in the run dir and logs it:
 
 * ``train/*``   every row of ``train_log.jsonl`` (the losses, per-step MMD / GAN terms, grad norm, lr,
-                cache, s/step: whatever the trainer logs), on the ``train/step`` axis (ours and RDM:
-                the optimizer step; DMD2: the iteration)
+                cache, s/step: whatever the trainer logs), at wandb step = the training step, so the
+                default x axis is the trainer's own step number (ours and RDM: the optimizer step;
+                DMD2: the iteration); ``train/step`` holds it too
 * ``perf/*``    s/step, elapsed hours, GPU-hours spent, progress and ETA against the planned total
                 (``--total``, else ``plan.json``); the plan itself goes into the run config
 * ``ckpt/step`` each ``step_*.pth`` as it appears
@@ -175,7 +176,12 @@ class Watcher:
                 if total:
                     m["perf/progress"] = step / total
                     m["perf/eta_hours"] = max(0, total - step) * (sum(self.recent) / len(self.recent)) / 3600
-            self.run.log(m)
+            # wandb's step = the trainer's, unless the run's counter is already past it (a
+            # restart after evaluations were logged): then the next one, so the row is kept
+            if step >= self.run.step:
+                self.run.log(m, step=step)
+            else:
+                self.run.log(m)
             self.state["last_step"] = step
         if lines:
             self._save()
@@ -185,7 +191,7 @@ class Watcher:
             if p.name in self.state["ckpts"]:
                 continue
             step = int(p.stem.split("_")[1])
-            self.run.log({"train/step": max(step, self.state["last_step"]), "ckpt/step": step})
+            self.run.log({"ckpt/step": step}, commit=False)          # onto the current row
             self.state["ckpts"].append(p.name)
             self._save()
 
