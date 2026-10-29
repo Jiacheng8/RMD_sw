@@ -23,15 +23,21 @@ wandb login
 
 ## 第 2 步：把下面这段发给 coding agent（Codex / Claude Code）
 
-<span style="color:#d73a49">**红色的地方**</span>改成你的情况，其余不动：
+先复制（代码块右上角的复制按钮），再把 3 处 `【改】` 换成你的情况：
 
-<pre>
+| 要改的地方 | 填什么 |
+|---|---|
+| <span style="color:#d73a49">**【改】实验指南**</span> | 第几个实验：`01_ours.md` → `02_rdm.md` → `03_dmd2.md` |
+| <span style="color:#d73a49">**【改】GPU 数量**</span> | 机器上的 GPU 数量，比如 `8` |
+| <span style="color:#d73a49">**【改】root**</span> | 数据放哪：`df -h` 看哪块盘最大，就放那块盘上，比如 `/workspace/rdm-sets`。**三个实验都用同一个** |
+
+```text
 请按照仓库里的实验指南，在这台机器上跑一个实验。
 
 - 仓库：https://github.com/Jiacheng8/RMD_sw.git ，分支 zimage（没有就 clone 到空间最大的盘上；已有就 git pull）
-- 实验指南：z-image/guides/<span style="color:#d73a49"><b>01_ours.md</b></span>
-- GPU 数量：<span style="color:#d73a49"><b>8</b></span>
-- --root：<span style="color:#d73a49"><b>/workspace/rdm-sets</b></span>
+- 实验指南：z-image/guides/【改】实验指南，比如 01_ours.md
+- GPU 数量：【改】GPU 数量，比如 8
+- --root：【改】root，比如 /workspace/rdm-sets
 - wandb：我已经在这台机器上登录过，你不用处理
 
 要求：
@@ -41,24 +47,18 @@ wandb login
    启动后告诉我输出里是 wandb on 还是 wandb off。
 4. 出错时不要自己改代码或重开实验，把命令、报错和日志最后 30 行发给我。
 5. 结束后把结果表原样发给我。
-</pre>
-
-| 红色的地方 | 填什么 |
-|---|---|
-| <span style="color:#d73a49">**01_ours.md**</span> | 第几个实验：`01_ours.md` → `02_rdm.md` → `03_dmd2.md` |
-| <span style="color:#d73a49">**8**</span> | 机器上的 GPU 数量 |
-| <span style="color:#d73a49">**/workspace/rdm-sets**</span> | 数据放哪：`df -h` 看哪块盘最大，就放那块盘上。**三个实验都用同一个** |
+```
 
 <details>
-<summary><b>English version of the prompt</b>（点开；红色的地方同样要改）</summary>
+<summary><b>English version of the prompt</b>（点开；同样把 3 处 【EDIT】 换掉）</summary>
 
-<pre>
+```text
 Please run one experiment on this machine by following the experiment guide in the repository.
 
 - Repository: https://github.com/Jiacheng8/RMD_sw.git , branch zimage (clone it onto the largest disk if it is not here yet; otherwise git pull)
-- Experiment guide: z-image/guides/<span style="color:#d73a49"><b>01_ours.md</b></span>
-- Number of GPUs: <span style="color:#d73a49"><b>8</b></span>
-- --root: <span style="color:#d73a49"><b>/workspace/rdm-sets</b></span>
+- Experiment guide: z-image/guides/【EDIT】guide file, e.g. 01_ours.md
+- Number of GPUs: 【EDIT】number of GPUs, e.g. 8
+- --root: 【EDIT】root, e.g. /workspace/rdm-sets
 - wandb: I have already logged in on this machine; you do not need to handle it
 
 Requirements:
@@ -68,7 +68,7 @@ Requirements:
    after launch, tell me whether the output says wandb on or wandb off.
 4. If something fails, do not change the code or restart the experiment yourself. Send me the command, the error and the last 30 lines of the log.
 5. When it finishes, send me the result table exactly as the script printed it.
-</pre>
+```
 
 The guides themselves are in Chinese; Codex and Claude Code read them fine.
 </details>
