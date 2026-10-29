@@ -7,6 +7,7 @@
 #   bash z-image/eval_qib/run_eval.sh --name turbo9 --teacher-steps 9           # the 8-step teacher
 #   bash z-image/eval_qib/run_eval.sh --name turbo2 --teacher-steps 2           # teacher at 2 steps
 #   bash z-image/eval_qib/run_eval.sh --report s2000 turbo9 turbo2              # table only
+#   bash z-image/eval_qib/run_eval.sh --calibrate Qwen-Image                    # check the judge setup
 #
 # --root DIR        everything goes under it (default /data/thor/jiacheng/rdm-sets/qib):
 #                   env/ (judge env), bench/ (release code + prompts), judge/ (54.7 GB weights),
@@ -22,6 +23,9 @@
 # --batch N         judge batch (ms-swift max_batch_size; default 24 as the paper, lower if it OOMs)
 # --limit N         the first N prompts only: a smoke test of the whole chain (use its own --name;
 #                   its scores cover N prompts and are not comparable with the leaderboard)
+# --calibrate M     instead of rendering, re-judge release model M's own images (first --limit,
+#                   default 100) and compare with the release's stored verdicts (eval_qib/calibrate.py):
+#                   our total must land within 2.5 of the leaderboard judge's on the same images
 # --skip-generate / --skip-judge   re-use a stage's output
 # A stage whose output exists is skipped: images are resumed per file, judge parts per part (a part
 # interrupted mid-way starts over: judge.py writes its results only at the end).
@@ -31,7 +35,7 @@ ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$ZDIR/.." && pwd)"
 ROOT="/data/thor/jiacheng/rdm-sets/qib"
 NAME=""; CKPT=""; TEACHER=0; LANG_="zh"; BATCH=24; SETUP=0; REPORT=0; LIMIT=0; PER_JUDGE=""
-GEN_GPUS=""; JUDGE_GPUS=""; DO_GEN=1; DO_JUDGE=1
+GEN_GPUS=""; JUDGE_GPUS=""; DO_GEN=1; DO_JUDGE=1; CALIB=""
 CONDA_ENV="${CONDA_ENV:-rdm}"
 ASSETS="${ASSETS:-/data/thor/jiacheng/rdm-sets}"
 while [[ $# -gt 0 ]]; do
@@ -48,12 +52,17 @@ while [[ $# -gt 0 ]]; do
     --judge-gpus)    JUDGE_GPUS="$2"; shift 2 ;;
     --skip-generate) DO_GEN=0; shift ;;
     --skip-judge)    DO_JUDGE=0; shift ;;
+    --calibrate)     CALIB="$2"; shift 2 ;;
     --setup)         SETUP=1; shift ;;
     --report)        REPORT=1; shift; break ;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
+if [[ -n "$CALIB" ]]; then
+  (( LIMIT )) || LIMIT=100
+  NAME="${NAME:-calib_${CALIB}_limit${LIMIT}}"
+fi
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\n\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -140,6 +149,11 @@ RUN="$RUNS/$NAME"
 mkdir -p "$RUN/logs"
 say "Qwen-Image-Bench: $NAME -> $RUN"
 
+if [[ -n "$CALIB" && ! -f "$RUN/input.jsonl" ]]; then
+  say "calibration: the release's own images of $CALIB, first $LIMIT prompts (zh)"
+  rdm python -m eval_qib.calibrate prepare --bench "$BENCH" --model "$CALIB" --limit "$LIMIT" --out "$RUN" \
+    || die "could not fetch the release's images of $CALIB"
+fi
 if [[ $DO_GEN -eq 1 && ! -f "$RUN/input.jsonl" ]]; then
   [[ -n "$CKPT" || "$TEACHER" -gt 0 ]] || die "--ckpt <step_*.pth> or --teacher-steps N"
   GEN=(--bench "$BENCH" --out "$RUN" --lang "$LANG_" --limit "$LIMIT")
@@ -229,5 +243,11 @@ if [[ $DO_JUDGE -eq 1 && ! -f "$RUN/input_bench_scores.json" ]]; then
     || die "the judge answered without thinking: its scores are not comparable with the leaderboard"
 fi
 
+if [[ -n "$CALIB" ]]; then
+  say "calibration: our judge vs the leaderboard's, same images"
+  ( cd "$BENCH" && env PYTHONPATH="$ZDIR" "$ENV/bin/python" -m eval_qib.calibrate compare \
+      --bench "$BENCH" --model "$CALIB" --run "$RUN" ) | tee "$RUN/calibration.txt"
+  exit "${PIPESTATUS[0]}"
+fi
 say "scores"
 rdm python -m eval_qib.report "$RUN" --out "$RUN/report.md" | sed -n '1,20p'
