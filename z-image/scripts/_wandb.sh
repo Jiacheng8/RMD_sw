@@ -1,15 +1,35 @@
 # Weights & Biases for the launchers (sourced; needs ZDIR, REPO, ROOT, ENV_NAME and info()).
 # The logging itself is zimage_distill/wandb_watch.py, a background process that reads the files
 # the run writes -- the run never depends on it. On when a key is there: $WANDB_API_KEY, or
-# `wandb login` done once on the machine (~/.netrc); otherwise asked for at the start on a terminal
+# `wandb login` done once on the machine (~/.netrc, any wandb version); otherwise asked for at the start on a terminal
 # (Enter = no wandb). Runs go to the team sw-lmmd (WANDB_ENTITY overrides), project zimage-distill
 # (WANDB_PROJECT overrides); WANDB_MODE=disabled turns it off; WANDB_TAGS as usual.
 WANDB_RUN_DIR=""; WANDB_PID=""
 
+wandb_netrc_key() {   # the key `wandb login` stored: api.wandb.ai (wandb <= 0.30) or
+  # api.forge.coreweave.com (wandb >= 0.31, CoreWeave's name for the same service)
+  python3 - <<'PY' 2>/dev/null
+import netrc, os
+try:
+    n = netrc.netrc(os.environ.get("NETRC") or os.path.expanduser("~/.netrc"))
+except Exception:
+    raise SystemExit(1)
+for host in ("api.wandb.ai", "api.forge.coreweave.com"):
+    a = n.authenticators(host)
+    if a and a[2]:
+        print(a[2])
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 wandb_on() {
   [[ "${WANDB_MODE:-}" == disabled ]] && return 1
   [[ -n "${WANDB_API_KEY:-}" || "${WANDB_MODE:-}" == offline ]] && return 0
-  grep -qs "api.wandb.ai" "$HOME/.netrc"
+  # a login by a newer wandb sits under another host name than the env's wandb 0.30 reads:
+  # hand the key over explicitly (it stays in this process and its children)
+  local k; k=$(wandb_netrc_key) || return 1
+  export WANDB_API_KEY="$k"
 }
 
 wandb_ask() {   # once, at the start: the key for this process and its children (never stored)
