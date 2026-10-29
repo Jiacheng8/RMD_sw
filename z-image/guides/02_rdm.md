@@ -1,8 +1,8 @@
 # 实验 2：正式训练 RDM 基线（原始 RDM，local-to-global）
 
-**目的**：对照基线。同一个 2 步 student，用原始 RDM 目标：每步 10240 个新生成的样本，和整个 reference set 做 MMD（Nyström），没有 cache、没有 GAN。**花的 GPU 时间和 ours 一样**：脚本读 ours 的训练日志得到预算，先实测几步的速度，再定总步数（写进 `plan.json`）。一步要好几个小时，所以总共只有几步——这是设计如此。
+**目的**：对照基线。同一个 2 步 student，用原始 RDM 目标：每步 10240 个新生成的样本，和整个 reference set 做 MMD（Nyström），没有 cache、没有 GAN。**花的 GPU 时间和 ours 一样**：默认预算 100 GPU 小时（ours 2000 步的训练时间），先实测第一步的速度，再定总步数（写进 `plan.json`，预计 ~6 步）。一步要好几个小时，所以总共只有几步——这是设计如此。
 
-**前提**：实验 1（ours，`01_ours.md`）已经在**同一个 `--root`** 上跑完。没有的话要用户给 ours 的 GPU 小时数（`--match-gpu-hours`）。
+**不需要等 ours**：预算是固定的 100 GPU 小时，可以和 ours 同时在另一台机器上跑。
 
 **机器**：和 ours 相同的卡数（2/4/8 卡版本）。**时间**：≈ ours 的训练时间 + 评测 ~1 h。
 
@@ -29,7 +29,7 @@
 | 什么 | 怎么定 |
 |---|---|
 | 用哪个脚本 | 按 prompt 的 GPU 数： 8 → `rdm-global_eight-cards.sh`；4 → `_four-cards`；2 → `_two-cards` |
-| ours 跑完了吗 | 自己看：`<--root>/zimage/work_dirs/zimage-2step-1024/train_log.jsonl` 存在且有 2000 步（`tail -n 1` 看 step）。是：什么都不用加，dry-run 会打印预算。否：**停下问用户**（要么先跑完 ours，要么给 ours 的 GPU 小时数，加 `--match-gpu-hours H`） |
+| GPU 时间预算 | 默认 **100 GPU 小时**（= ours 2000 步的训练时间），什么都不用加；dry-run 里 `budget      --match-gpu-hours 100` 就对了。用户给了别的数才加 `--match-gpu-hours H` |
 
 ## 检查机器（开始前）
 

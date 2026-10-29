@@ -20,14 +20,14 @@
 #   4 judge env   eval_qib/run_eval.sh --setup (skipped with --no-eval)
 #   5 train       torchrun -m zimage_distill.dmd2: the official SDXL recipe (batch 128, ratio 5,
 #                 lr 5e-7, GAN 5e-3 / 1e-2, clip 10), real-score guidance 4; the iteration count spends
-#                 ours' GPU time (--match-run, default ours' run under --root) or --match-gpu-hours
+#                 ours' GPU time: 100 GPU-h by default, or --match-gpu-hours H, or --match-run DIR
 #   6 eval        Qwen-Image-Bench on the last checkpoint, tabulated with whatever ours / teacher /
 #                 RDM runs are already judged -> <run dir>/qwen_image_bench.md
 #
 # --root DIR          data root (default /root/rdm-sets; the same as ours to reuse everything)
 # --gpus N            training GPUs (set by the launcher: 4 or 8 x 80 GB; three 6 B models)
-# --match-run DIR     ours' run dir (default: the one under --root)
-# --match-gpu-hours H the budget in GPU-hours instead;  --iterations N  a fixed count instead
+# --match-gpu-hours H the budget in GPU-hours (default 100 = ours' 2000 training steps)
+# --match-run DIR     read the budget from ours' run dir instead;  --iterations N  a fixed count
 # --real-shards K     tar shards of real renders to encode (default 24)
 # --guidance G        real-score CFG scale (default 4)
 # --batch N           prompts per iteration (default 128, DMD2's)
@@ -43,7 +43,7 @@ set -euo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$ZDIR/.." && pwd)"
-ROOT="/root/rdm-sets"; GPUS=""; MATCH_RUN=""; MATCH_H=""; ITERS=""; SHARDS=24; GUIDANCE=4
+ROOT="/root/rdm-sets"; GPUS=""; MATCH_RUN=""; MATCH_H="100"; ITERS=""; SHARDS=24; GUIDANCE=4
 RESUME=0; EVAL_ONLY=0; DO_EVAL=1; DRY=0; MICRO=""; ENV_NAME="rdm"
 BATCH=128; LAT=""; LAT_HF=""; OUT=""; CKPTS=4; EVAL_LIMIT=0
 CONFIG="$ZDIR/configs/zimage_2step_1024_h100.yaml"
@@ -93,8 +93,8 @@ else mapfile -t GPU_IDS < <(nvidia-smi --query-gpu=index --format=csv,noheader 2
 
 MATCH=()
 if [[ -n "$ITERS" ]]; then MATCH=(--iterations "$ITERS")
-elif [[ -n "$MATCH_H" ]]; then MATCH=(--match-gpu-hours "$MATCH_H")
-else MATCH_RUN="${MATCH_RUN:-$OURS_OUT/$EXP}"; MATCH=(--match-run "$MATCH_RUN"); fi
+elif [[ -n "$MATCH_RUN" ]]; then MATCH=(--match-run "$MATCH_RUN")
+else MATCH=(--match-gpu-hours "$MATCH_H"); fi
 wandb_require "$DRY"
 say "DMD2 baseline on $GPUS GPU(s) -> $RUN"
 info "budget      ${MATCH[*]}"

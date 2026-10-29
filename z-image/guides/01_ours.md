@@ -2,7 +2,7 @@
 
 **目的**：主方法。Z-Image-Turbo（8 步）→ 2 步 student，1024 px，每个 student step 一个 MMD + 一个 GAN critic，2000 步；结束后自动在 Qwen-Image-Bench（1000 prompt）上评最后一个 checkpoint（不评 teacher，teacher 由用户自己评）。
 
-**必须在实验 2（RDM，`02_rdm.md`）和 3（DMD2，`03_dmd2.md`）之前跑**：它们读这个 run 的日志来花同样多的 GPU 时间。三个实验最好在同一台机器、同一个 `--root` 上做。
+实验 2（RDM）和 3（DMD2）按固定的 100 GPU 小时（= 本实验 2000 步的训练时间）对齐，不需要等本实验跑完。
 
 **机器**：8×A100/H100 80GB（也有 2 卡、4 卡版本）。**磁盘**：本实验 ~330 GB；三个实验都放这个 root 共 ~650–700 GB。**时间**：2×A100 实测 93 s/步（~52 h）；8 卡估计 25–30 s/步（~15–20 h）；再加评测 ~2–3 h、首次准备 1–2 h。
 
@@ -60,7 +60,6 @@ tmux new -d -s ours "bash z-image/scripts/ours_eight-cards.sh --root /root/rdm-s
 ## 结束时
 
 - 对比表：`/root/rdm-sets/zimage/work_dirs/zimage-2step-1024/qwen_image_bench.md`（ours 最后一步；已评过的 teacher 也会列进去），**交给用户**。
-- 告诉用户：可以接着在同一个 `--root` 上做实验 2、3。
 
 ## 出问题时
 

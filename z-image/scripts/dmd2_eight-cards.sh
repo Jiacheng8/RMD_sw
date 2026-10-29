@@ -9,7 +9,8 @@
 #   bash z-image/scripts/dmd2_eight-cards.sh --root /root/rdm-sets                     # prepare, train, evaluate
 #   bash z-image/scripts/dmd2_eight-cards.sh --root /root/rdm-sets --resume            # after an interruption
 #
-# With ours' run under the same --root its GPU time is matched automatically; otherwise pass
-# --match-gpu-hours H (or --iterations N). All options: bash z-image/scripts/_dmd2_run.sh --help
+# Budget: ours' GPU time, 100 GPU-h by default (--match-gpu-hours H, --match-run DIR or
+# --iterations N to change it): ~500 iterations, ~100 student updates [estimate]; no need to wait
+# for ours. All options: bash z-image/scripts/_dmd2_run.sh --help
 set -euo pipefail
 exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_dmd2_run.sh" --gpus 8 "$@"

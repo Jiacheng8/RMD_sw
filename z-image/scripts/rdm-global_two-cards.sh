@@ -8,9 +8,9 @@
 #   bash z-image/scripts/rdm-global_two-cards.sh --root /root/rdm-sets                       # prepare, train, evaluate
 #   bash z-image/scripts/rdm-global_two-cards.sh --root /root/rdm-sets --resume              # after an interruption
 #
-# With ours' run under the same --root its GPU time is matched automatically; otherwise pass
-# --match-gpu-hours H (or --match-run DIR, --steps N). ~7 steps of 10240 rows fit ours' 2000
-# (one step ~1.8 h on 8 GPUs, ~3.5 h on 4, ~7 h on 2 -- A100 estimates).
+# Budget: ours' GPU time, 100 GPU-h by default (--match-gpu-hours H, --match-run DIR or --steps N
+# to change it). ~6 steps of 10240 rows fit it (one step ~2 h on 8 GPUs, ~4 h on 4, ~8 h on 2 --
+# A100 estimates); no need to wait for ours.
 # All options: bash z-image/scripts/_rdm_global_run.sh --help
 set -euo pipefail
 exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_rdm_global_run.sh" --gpus 2 "$@"

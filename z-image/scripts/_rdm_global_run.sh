@@ -14,21 +14,21 @@
 #   2 judge env  eval_qib/run_eval.sh --setup (skipped with --no-eval)
 #   3 train      torchrun -m zimage_distill.rdm_global: N fresh rows per step (default 10240, iRDM's
 #                rollout), each matched against the whole reference set (Nystrom, built once from the
-#                store); the step count spends ours' GPU time: --match-run <ours' run dir> (default
-#                <root>/zimage/work_dirs/zimage-2step-1024 when it holds a log) or --match-gpu-hours
+#                store); the step count spends ours' GPU time: 100 GPU-h by default (ours' 2000
+#                steps, training only), or --match-gpu-hours H, or --match-run <ours' run dir>
 #   4 eval       Qwen-Image-Bench on the last checkpoint; the table also lists whatever ours / teacher
 #                runs <root>/qib/runs holds -> <run dir>/qwen_image_bench.md
 #
-# Budget arithmetic: ours on 2 x A100 is 2000 steps x 93 s x 2 GPUs ~ 103 GPU-h; one 10240-row step
-# costs ~14 GPU-h (every row is rolled out and back-propagated through both student steps), so the
-# baseline gets ~7 steps (~1.8 h each on 8 GPUs). That IS the comparison: same compute, iRDM's
+# Budget arithmetic: ours' 2000 steps are ~100 GPU-h of training; one 10240-row step costs ~16 GPU-h
+# (every row is rolled out and back-propagated through both student steps; the 4 x A100 smoke test
+# ran 128 rows in ~180 s), so the baseline gets ~6 steps (~2 h each on 8 GPUs). That IS the comparison: same compute, iRDM's
 # batch. --rows N changes it (N must split over the GPUs).
 #
 # --root DIR          data root (default /root/rdm-sets; the same as ours to reuse everything)
 # --gpus N            training GPUs (set by the launcher)
 # --rows N            fresh rows per step (default 10240)
-# --match-run DIR     ours' run dir (default: the one under --root, if it has a train_log.jsonl)
-# --match-gpu-hours H the budget in GPU-hours instead (e.g. ours' printed wall time x its GPUs)
+# --match-gpu-hours H the budget in GPU-hours (default 100 = ours' 2000 training steps)
+# --match-run DIR     read the budget from ours' run dir instead (its train_log.jsonl)
 # --steps N           a fixed step count instead of a budget
 # --output-dir DIR    where the run dir goes (default <root>/zimage/work_dirs)
 # --checkpoints N     evenly spaced step checkpoints (default 4)
@@ -43,7 +43,7 @@ set -euo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$ZDIR/.." && pwd)"
-ROOT="/root/rdm-sets"; GPUS=""; ROWS=10240; MATCH_RUN=""; MATCH_H=""; STEPS=""; RESUME=0
+ROOT="/root/rdm-sets"; GPUS=""; ROWS=10240; MATCH_RUN=""; MATCH_H="100"; STEPS=""; RESUME=0
 EVAL_ONLY=0; DO_EVAL=1; DRY=0; MICRO=""; ENV_NAME="rdm"; REF_HF=""; PASS=(); OUT=""; CKPTS=4; EVAL_LIMIT=0; OOM_PROBE=0
 CONFIG="$ZDIR/configs/zimage_2step_1024_h100.yaml"
 while [[ $# -gt 0 ]]; do
@@ -83,14 +83,12 @@ EXP=$(python3 -c "import re,sys; print(re.search(r'^exp_name:\s*(\S+)', open(sys
 RUN="$OUT/$EXP-rdm-global-N$ROWS"
 OURS_RUN="$OURS_OUT/$EXP"
 
-# the budget: ours' run, unless given
+# the budget: --steps, else ours' run when given, else --match-gpu-hours (default 100)
 MATCH=()
 if (( OOM_PROBE )); then MATCH=(--oom-probe)
 elif [[ -n "$STEPS" ]]; then MATCH=(--steps "$STEPS")
-elif [[ -n "$MATCH_H" ]]; then MATCH=(--match-gpu-hours "$MATCH_H")
-else
-  MATCH_RUN="${MATCH_RUN:-$OURS_RUN}"
-  MATCH=(--match-run "$MATCH_RUN")
+elif [[ -n "$MATCH_RUN" ]]; then MATCH=(--match-run "$MATCH_RUN")
+else MATCH=(--match-gpu-hours "$MATCH_H")
 fi
 (( OOM_PROBE == 0 )) && wandb_require "$DRY"
 say "RDM (local-to-global) baseline: $ROWS fresh rows/step on $GPUS GPU(s) -> $RUN"
