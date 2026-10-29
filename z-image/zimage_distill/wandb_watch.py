@@ -99,6 +99,7 @@ class Watcher:
         self.state.setdefault("evals_done", [])
         self.state.setdefault("ckpts", [])
         self.state.setdefault("seconds", 0.0)
+        self.state.setdefault("t0", time.time())    # eval/minutes counts from the first start
         config = {"kind": a.kind, "run_dir": str(self.run_dir), "gpus": a.gpus}
         if a.config and Path(a.config).exists():
             import yaml
@@ -118,7 +119,7 @@ class Watcher:
             self.run.define_metric(p, step_metric="train/step")
         self.run.define_metric("eval/minutes")
         self.run.define_metric("eval/*", step_metric="eval/minutes")
-        self.offset, self.plan, self.t0 = 0, None, time.time()
+        self.offset, self.plan, self.t0 = 0, None, self.state["t0"]
         self.recent = deque(maxlen=20)           # s/step of the last rows, for the ETA
 
     def _save(self):

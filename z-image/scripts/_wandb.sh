@@ -22,7 +22,8 @@ wandb_ask() {   # once, at the start: the key for this process and its children 
 wandb_start() {   # wandb_start <run dir> <kind> <gpus> [total steps] [config]
   wandb_on || { info "wandb       off (no key; see z-image/scripts/_wandb.sh)"; return 0; }
   WANDB_RUN_DIR="$1"; mkdir -p "$1/logs"; rm -f "$1/.wandb_stop"
-  local args=(--run "$1" --kind "$2" --gpus "$3" --qib "$ROOT/qib/runs" --pid $$)
+  local args=(--run "$1" --kind "$2" --qib "$ROOT/qib/runs" --pid $$)
+  [[ -n "${3:-}" ]] && args+=(--gpus "$3")
   [[ -n "${4:-}" ]] && args+=(--total "$4")
   [[ -n "${5:-}" ]] && args+=(--config "$5")
   ( [[ -f "$ROOT/env.sh" ]] && source "$ROOT/env.sh"; export PYTHONPATH="$ZDIR:$REPO:${PYTHONPATH:-}"
