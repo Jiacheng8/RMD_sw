@@ -14,8 +14,9 @@
 #              buffer of a 10240-row step at full size (2560 rows' features per GPU, the gathered
 #              10240 x 10240 loss and its backward, an optimizer step), only 2 micro-batches really
 #              rolled out -- a few minutes; PASS/FAIL + peak memory per GPU, nothing saved
-#   4 dmd2     dmd2_four-cards.sh --iterations 10 --eval-limit 10, batch 128 (DMD2's), real data from
-#              2 tar shards (~2.8k renders) in a smoke-only dir; 10 iterations = 2 student updates
+#   4 dmd2     dmd2_four-cards.sh --iterations 10 --eval-limit 10, batch 128 (DMD2's), real data =
+#              the prepared latents from --dmd2-latents-hf (~18 GB, into <root>/zimage/dmd2_latents,
+#              where the real run reuses them); 10 iterations = 2 student updates
 #
 # Everything heavy is shared with the real runs under --root (env, weights, reference pack, contexts,
 # judge) and done once; the first launcher pays for it (~1-2 h: downloads, the 70 GB context
@@ -32,12 +33,15 @@
 # --eval-limit N    prompts rendered + judged (default 10)
 # --rdm-rows N      RDM's rows per step in the smoke run (default 128)
 # --probe-rows N    rows the OOM probe tests (default 10240)
+# --dmd2-latents-hf REPO  DMD2's real latents (default jiachengcui888/zimage-dmd2-latents; '' encodes
+#                   2 tar shards into a smoke-only dir instead)
 # --keep-ckpts      keep the smoke runs' checkpoints
 # --fresh           delete <root>/zimage/smoke first (re-run everything of the smoke runs)
 set -uo pipefail
 export PYTHONNOUSERSITE=1
 ZDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="/root/rdm-sets"; ONLY="ours,rdm,rdm-oom,dmd2"; STEPS=10; LIMIT=10; RDM_ROWS=128; PROBE_ROWS=10240
+DMD2_LAT_HF="jiachengcui888/zimage-dmd2-latents"
 KEEP=0; FRESH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --eval-limit) LIMIT="$2"; shift 2 ;;
     --rdm-rows)   RDM_ROWS="$2"; shift 2 ;;
     --probe-rows) PROBE_ROWS="$2"; shift 2 ;;
+    --dmd2-latents-hf) DMD2_LAT_HF="$2"; shift 2 ;;
     --keep-ckpts) KEEP=1; shift ;;
     --fresh)      FRESH=1; shift ;;
     -h|--help) sed -n '2,/^set -uo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -131,6 +136,9 @@ run_probe() {   # run_probe <key> <command...>: the OOM probe -- no training, no
   info "${STATUS[$key]} | ${WALL[$key]} | peak ${PEAK[$key]} | torch ${SCORE[$key]}"
 }
 
+if [[ -n "$DMD2_LAT_HF" ]]; then DMD2_DATA=(--latents-hf "$DMD2_LAT_HF")
+else DMD2_DATA=(--real-shards 2 --latents-dir "$SMOKE/dmd2_latents"); fi
+
 IFS=, read -r -a WHICH <<< "$ONLY"
 for key in "${WHICH[@]}"; do
   case "$key" in
@@ -148,8 +156,7 @@ for key in "${WHICH[@]}"; do
     dmd2)
       run_one dmd2 "$WORK/$EXP-dmd2" "dmd2_it${STEPS}_limit$LIMIT" \
         bash "$ZDIR/scripts/dmd2_four-cards.sh" --root "$ROOT" --iterations "$STEPS" \
-          --real-shards 2 --latents-dir "$SMOKE/dmd2_latents" --checkpoints 1 \
-          --output-dir "$WORK" --eval-limit "$LIMIT" ;;
+          "${DMD2_DATA[@]}" --checkpoints 1 --output-dir "$WORK" --eval-limit "$LIMIT" ;;
     *) echo "unknown launcher '$key' (ours, rdm, rdm-oom, dmd2)" >&2; exit 2 ;;
   esac
 done
