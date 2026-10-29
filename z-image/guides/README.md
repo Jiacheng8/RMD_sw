@@ -29,8 +29,8 @@ wandb login
 请按照仓库里的实验指南，在这台机器上跑一个实验。
 
 - 仓库：https://github.com/Jiacheng8/RMD_sw.git ，分支 zimage
-- 工作目录：<span style="color:#d73a49"><b>/workspace</b></span> —— 仓库放在 <span style="color:#d73a49"><b>/workspace/RDM</b></span>（没有就 clone 到这里；已有就 cd 进去 git pull），所有命令在 <span style="color:#d73a49"><b>/workspace/RDM</b></span> 下执行
-- 大数据目录（即 --root）：<span style="color:#d73a49"><b>/workspace/rdm-sets</b></span> —— 模型权重、训练数据、checkpoint、评测结果全部放这里（约 700 GB），不要放到别的盘
+- 仓库目录：<span style="color:#d73a49"><b>/root/RDM</b></span> —— 没有就 clone 到这里；已有就 cd 进去 git pull。所有命令都在这个目录下执行
+- 大数据目录（即 --root）：<span style="color:#d73a49"><b>/root/rdm-sets</b></span> —— 模型权重、训练数据、checkpoint、评测结果全部放这里（约 700 GB），不要放到别的盘
 - 实验指南：z-image/guides/<span style="color:#d73a49"><b>01_ours.md</b></span>
 - GPU 数量：<span style="color:#d73a49"><b>8</b></span>
 - wandb：我已经在这台机器上登录过，你不用处理
@@ -46,8 +46,8 @@ wandb login
 
 | 要改的地方 | 填什么 |
 |---|---|
-| <span style="color:#d73a49">**工作目录** `/workspace`</span> | 仓库 clone 到哪（会放在它下面的 `RDM/`）。先 `df -h` 看哪块盘最大 |
-| <span style="color:#d73a49">**大数据目录** `/workspace/rdm-sets`</span> | 所有大文件放哪（~700 GB）。必须在最大的那块盘上；**三个实验都用同一个**。（conda 环境装在 conda 自己的目录，另需 ~20 GB） |
+| <span style="color:#d73a49">**仓库目录** `/root/RDM`</span> | 代码放哪（只有几百 MB）。默认 `/root/RDM` |
+| <span style="color:#d73a49">**大数据目录** `/root/rdm-sets`</span> | 所有大文件放哪（~700 GB）。默认 `/root/rdm-sets`；先 `df -h` 确认 `/root` 所在的盘有这么大，不够就换成最大的那块盘（比如 `/workspace/rdm-sets`）；**三个实验都用同一个**。（conda 环境装在 conda 自己的目录，另需 ~20 GB） |
 | <span style="color:#d73a49">**实验指南** `01_ours.md`</span> | 第几个实验：`01_ours.md` → `02_rdm.md` → `03_dmd2.md` |
 | <span style="color:#d73a49">**GPU 数量** `8`</span> | 机器上的 GPU 数量 |
 
@@ -58,8 +58,8 @@ wandb login
 Please run one experiment on this machine by following the experiment guide in the repository.
 
 - Repository: https://github.com/Jiacheng8/RMD_sw.git , branch zimage
-- Working directory: <span style="color:#d73a49"><b>/workspace</b></span> -- the repository lives in <span style="color:#d73a49"><b>/workspace/RDM</b></span> (clone it there if missing; otherwise cd into it and git pull); run every command from <span style="color:#d73a49"><b>/workspace/RDM</b></span>
-- Big-data directory (i.e. --root): <span style="color:#d73a49"><b>/workspace/rdm-sets</b></span> -- model weights, training data, checkpoints and evaluation results all go here (~700 GB); do not put them on any other disk
+- Repository directory: <span style="color:#d73a49"><b>/root/RDM</b></span> -- clone it here if missing; otherwise cd into it and git pull. Run every command from this directory
+- Big-data directory (i.e. --root): <span style="color:#d73a49"><b>/root/rdm-sets</b></span> -- model weights, training data, checkpoints and evaluation results all go here (~700 GB); do not put them on any other disk
 - Experiment guide: z-image/guides/<span style="color:#d73a49"><b>01_ours.md</b></span>
 - Number of GPUs: <span style="color:#d73a49"><b>8</b></span>
 - wandb: I have already logged in on this machine; you do not need to handle it
