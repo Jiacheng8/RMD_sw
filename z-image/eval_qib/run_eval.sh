@@ -136,7 +136,7 @@ if [[ $DO_GEN -eq 1 && ! -f "$RUN/input.jsonl" ]]; then
   GEN=(--bench "$BENCH" --out "$RUN" --lang "$LANG_" --limit "$LIMIT")
   if [[ -n "$CKPT" ]]; then GEN+=(--ckpt "$CKPT"); else GEN+=(--teacher-steps "$TEACHER"); fi
   IFS=, read -r -a GG <<< "${GEN_GPUS:-$(visible)}"
-  say "render 1000 prompts ($LANG_) on GPUs ${GG[*]}"
+  say "render $( (( LIMIT )) && echo "the first $LIMIT" || echo 1000) prompts ($LANG_) on GPUs ${GG[*]}"
   pids=()
   for r in "${!GG[@]}"; do
     CUDA_VISIBLE_DEVICES="${GG[$r]}" rdm python -m eval_qib.generate "${GEN[@]}" \
