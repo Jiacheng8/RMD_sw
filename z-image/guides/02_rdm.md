@@ -1,10 +1,10 @@
-# 实验 5：正式训练 DMD2 基线
+# 实验 2：正式训练 RDM 基线（原始 RDM，local-to-global）
 
-**目的**：对照基线。DMD2（官方 SDXL 配置：batch 128，TTUR 5，lr 5e-7，GAN 5e-3/1e-2）蒸馏同一个 2 步 student。real score 是未蒸馏的 `Tongyi-MAI/Z-Image`（CFG 4），fake score 是它的可训练副本加 GAN head；真实数据是 Turbo 的 reference 图，已编码好放在 HF（`jiachengcui888/zimage-dmd2-latents`，~18 GB）。**花的 GPU 时间和 ours 一样**（读 ours 的日志）。
+**目的**：对照基线。同一个 2 步 student，用原始 RDM 目标：每步 10240 个新生成的样本，和整个 reference set 做 MMD（Nyström），没有 cache、没有 GAN。**花的 GPU 时间和 ours 一样**：脚本读 ours 的训练日志得到预算，先实测几步的速度，再定总步数（写进 `plan.json`）。一步要好几个小时，所以总共只有几步——这是设计如此。
 
-**前提**：实验 3（ours）已经在**同一个 `--root`** 上跑完（或者用户给 ours 的 GPU 小时数）。
+**前提**：实验 1（ours，`01_ours.md`）已经在**同一个 `--root`** 上跑完。没有的话要用户给 ours 的 GPU 小时数（`--match-gpu-hours`）。
 
-**机器**：8×A100/H100 80GB（最少 4 卡：要同时放三个 6B 模型）。**时间**：≈ ours 的训练时间 + 下载 Z-Image（~25 GB）+ latents（~18 GB）+ 评测 ~1 h。
+**机器**：和 ours 相同的卡数（2/4/8 卡版本）。**时间**：≈ ours 的训练时间 + 评测 ~1 h。
 
 > 给 coding agent（Codex / Claude Code）：这份文件是自包含的，按顺序做即可。
 
@@ -28,7 +28,7 @@
 
 | 问题 | 默认 / 说明 |
 |---|---|
-| 几张卡？ | 8 → `dmd2_eight-cards.sh`；4 → `dmd2_four-cards.sh`；少于 4 不能跑 |
+| 几张卡？ | 8 → `rdm-global_eight-cards.sh`；4 → `_four-cards`；2 → `_two-cards` |
 | ours 是否在这个 root 上跑完？ | 是：什么都不用加。否：问用户 ours 的 GPU 小时数，加 `--match-gpu-hours H` |
 | wandb key | 可选，sw-lmmd team 成员的 key |
 | `--root` 放哪 | 空间最大的盘，默认 `/root/rdm-sets` |
@@ -50,17 +50,19 @@ cd RDM && git log --oneline -1               # 记下 commit
 
 ```bash
 cd /root/RDM
-bash z-image/scripts/dmd2_eight-cards.sh --root /root/rdm-sets --latents-hf jiachengcui888/zimage-dmd2-latents --dry-run
-tmux new -d -s dmd2 "export WANDB_API_KEY=<key>; bash z-image/scripts/dmd2_eight-cards.sh --root /root/rdm-sets --latents-hf jiachengcui888/zimage-dmd2-latents 2>&1 | tee /root/dmd2.out"
+bash z-image/scripts/rdm-global_eight-cards.sh --root /root/rdm-sets --dry-run         # 检查 + 预算
+tmux new -d -s rdmoom "bash z-image/scripts/rdm-global_eight-cards.sh --root /root/rdm-sets --oom-probe 2>&1 | tee /root/rdmoom.out"   # 可选，几分钟：确认 10240 行不爆显存
+tmux new -d -s rdm "export WANDB_API_KEY=<key>; bash z-image/scripts/rdm-global_eight-cards.sh --root /root/rdm-sets 2>&1 | tee /root/rdm.out"
 ```
-- 每 5 个 iteration 有 1 个更新 student（`[student]`），其余只更新 fake score。看 `dmd`、`gan_g`（student）和 `fake`、`gan_d`、`d_real`/`d_fake`（fake score / 判别器）。
-- 中断后加 `--resume`；只差评测加 `--eval-only`。
-- wandb：group `dmd2`。
+- `--oom-probe` 结束时每张卡打印 `oom-probe: PASS ... peak ... GiB` 或 `FAIL`；FAIL 就停下告诉用户。
+- 进度：`/root/rdm.out` 里的 `step N | loss 2.0000 | mmd2 s1=... s2=...`。**`loss` 恒为 2.0（自归一化），看 `mmd2`。** 计划定下后打印 `plan: ... -> N steps`。
+- 每步耗时超过 10 分钟时每步都存 `resume.pth`；中断后加 `--resume`。
+- wandb：group `rdm-global`。
 
 ## 结束时
 
-- 输出目录：`/root/rdm-sets/zimage/work_dirs/zimage-2step-1024-dmd2/`。
-- 对比表：该目录下 `qwen_image_bench.md`（同时列出已评过的 ours、RDM、teacher），**交给用户**。
+- 输出目录：`/root/rdm-sets/zimage/work_dirs/zimage-2step-1024-rdm-global-N10240/`。
+- 对比表：该目录下 `qwen_image_bench.md`（会同时列出已经评过的 ours 和 teacher），**交给用户**。
 
 ## 出问题时
 

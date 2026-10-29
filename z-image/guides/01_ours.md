@@ -1,10 +1,10 @@
-# 实验 2：评测 teacher（Z-Image-Turbo 在 Qwen-Image-Bench 上）
+# 实验 1：正式训练 ours（SW-LMMD，2 步 student）
 
-**目的**：Z-Image-Turbo 本身的分数——官方 9 步（上限参考）和直接跑 2 步（不蒸馏的 2 步基线）。1000 个中文 prompt，Q-Judger（Qwen3.6-27B）打分，0–100。
+**目的**：主方法。Z-Image-Turbo（8 步）→ 2 步 student，1024 px，每个 student step 一个 MMD + 一个 GAN critic，2000 步；结束后自动在 Qwen-Image-Bench（1000 prompt）上评最后一个 checkpoint，以及 teacher 9 步 / 2 步。
 
-**机器**：4×A100 80GB 推荐（任何 80 GB 卡都行，卡越多越快）。**磁盘**：~100 GB。**时间**：新机器约 2–2.5 h（准备 30–40 min + turbo9 出图 ~20 min（实测 4.4 s/张）+ turbo2 出图 ~7 min + 打分每个模型 ~20–35 min [估计]）。
+**必须在实验 2（RDM，`02_rdm.md`）和 3（DMD2，`03_dmd2.md`）之前跑**：它们读这个 run 的日志来花同样多的 GPU 时间。三个实验最好在同一台机器、同一个 `--root` 上做。
 
-如果这个 `--root` 上已经跑完了实验 3（ours 正式训练），teacher 已经评过了，不用再跑。
+**机器**：8×A100/H100 80GB（也有 2 卡、4 卡版本）。**磁盘**：本实验 ~330 GB；三个实验都放这个 root 共 ~650–700 GB。**时间**：2×A100 实测 93 s/步（~52 h）；8 卡估计 25–30 s/步（~15–20 h）；再加评测 ~2–3 h、首次准备 1–2 h。
 
 > 给 coding agent（Codex / Claude Code）：这份文件是自包含的，按顺序做即可。
 
@@ -28,7 +28,8 @@
 
 | 问题 | 默认 / 说明 |
 |---|---|
-| 评哪些步数？ | 默认 `9,2` |
+| 几张卡？ | 8 → `ours_eight-cards.sh`；4 → `ours_four-cards.sh`；2 → `ours_two-cards.sh` |
+| 先 `--gate` 测速度吗？ | 推荐：准备 + 20 步，看显存和 s/step，不评测 |
 | wandb key | 可选，sw-lmmd team 成员的 key |
 | `--root` 放哪 | 空间最大的盘，默认 `/root/rdm-sets` |
 
@@ -45,20 +46,23 @@ cd RDM && git log --oneline -1               # 记下 commit
 - 需要 `conda` 和 NVIDIA 驱动（GPU 云镜像一般都有），环境由脚本自己装。**不需要 HF token**。
 - **wandb（可选）**：把 key 写进 tmux 命令（`export WANDB_API_KEY=<key>; ...`），或在环境装好后登录一次 `conda run -n rdm wandb login <key>`。key 要属于 **sw-lmmd** team 成员（https://wandb.ai/authorize）。不给 key 也照常跑，只是不记 wandb。
 
-## 运行
+## 运行（以 8 卡为例）
 
 ```bash
 cd /root/RDM
-tmux new -d -s teacher "bash z-image/scripts/evaluate-baseline.sh --root /root/rdm-sets --steps 9,2 2>&1 | tee /root/teacher.out"
+bash z-image/scripts/ours_eight-cards.sh --root /root/rdm-sets --dry-run          # 只检查，什么都不改
+tmux new -d -s gate "bash z-image/scripts/ours_eight-cards.sh --root /root/rdm-sets --gate 2>&1 | tee /root/gate.out"   # 可选
+tmux new -d -s ours "export WANDB_API_KEY=<key>; bash z-image/scripts/ours_eight-cards.sh --root /root/rdm-sets 2>&1 | tee /root/ours.out"
 ```
-- 自动挑空闲的卡（显存占用 < 2 GB 的）；指定卡用 `--gpus 0,1,2,3`。
-- 先试跑 20 个 prompt 确认流程：加 `--limit 20`（结果叫 `turbo9_limit20`，不进正式表）。
+- 每 500 步存一个 checkpoint（24.6 GB），另有 `resume.pth` 用于续跑。
+- 中断后：同一条命令加 `--resume`。只差评测：加 `--eval-only`。
+- 进度：`tail -n 5 /root/rdm-sets/zimage/work_dirs/zimage-2step-1024/train_log.jsonl`，或 `/root/ours.out` 里的 `step N | force ... | raw_mmd2 ...`。wandb：`wandb.ai/sw-lmmd/zimage-distill`（group `ours`）。
+- 看训练好坏用 `raw_mmd2`（应下降）；`force` 是自归一化后的值，不反映好坏。
 
 ## 结束时
 
-- 分数表：`/root/rdm-sets/qib/runs/report.md`（也打印在 `/root/teacher.out` 最后），**交给用户**。
-- 每个模型：`/root/rdm-sets/qib/runs/turbo9/`、`turbo2/`（`images/` 1000 张图，`input_bench_scores.json` 分数）。
-- 论文参考：GPT Image 2 64.69，FLUX 2 Pro 54.57，Qwen Image 49.23。
+- 对比表：`/root/rdm-sets/zimage/work_dirs/zimage-2step-1024/qwen_image_bench.md`（ours 最后一步、turbo9、turbo2），**交给用户**。
+- 告诉用户：可以接着在同一个 `--root` 上做实验 2、3。
 
 ## 出问题时
 
