@@ -49,6 +49,30 @@ wandb login
 | <span style="color:#d73a49">**8**</span> | 机器上的 GPU 数量 |
 | <span style="color:#d73a49">**/workspace/rdm-sets**</span> | 数据放哪：`df -h` 看哪块盘最大，就放那块盘上。**三个实验都用同一个** |
 
+<details>
+<summary><b>English version of the prompt</b>（点开；红色的地方同样要改）</summary>
+
+<pre>
+Please run one experiment on this machine by following the experiment guide in the repository.
+
+- Repository: https://github.com/Jiacheng8/RMD_sw.git , branch zimage (clone it onto the largest disk if it is not here yet; otherwise git pull)
+- Experiment guide: z-image/guides/<span style="color:#d73a49"><b>01_ours.md</b></span>
+- Number of GPUs: <span style="color:#d73a49"><b>8</b></span>
+- --root: <span style="color:#d73a49"><b>/workspace/rdm-sets</b></span>
+- wandb: I have already logged in on this machine; you do not need to handle it
+
+Requirements:
+1. Read the whole guide first and follow its rules strictly. Do not modify any code, and do not delete anything under --root.
+2. Run the guide's --dry-run first and send me its output. Start the real run only after I confirm.
+3. Run it in the background in tmux. Report regularly: current stage, step, seconds per step, any errors;
+   after launch, tell me whether the output says wandb on or wandb off.
+4. If something fails, do not change the code or restart the experiment yourself. Send me the command, the error and the last 30 lines of the log.
+5. When it finishes, send me the result table exactly as the script printed it.
+</pre>
+
+The guides themselves are in Chinese; Codex and Claude Code read them fine.
+</details>
+
 ## 第 3 步：等结果
 
 - agent 会先给你看计划（dry-run），你回复“开始”后它才正式跑。
