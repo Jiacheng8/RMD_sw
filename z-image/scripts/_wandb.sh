@@ -54,7 +54,7 @@ except ImportError:
 ent = os.environ.get("WANDB_ENTITY") or "sw-lmmd"
 try:
     v = wandb.Api(api_key=os.environ["WANDB_API_KEY"], timeout=30).viewer
-    user = v.username
+    user = v.username or "(service account)"     # a team service account has no user name
 except Exception as e:
     msg = (str(e).strip().splitlines() or [""])[0][:160]
     print(f"wandb refused the key ({type(e).__name__}: {msg})")
