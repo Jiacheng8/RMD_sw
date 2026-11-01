@@ -40,6 +40,7 @@ L = Σ_k w_k · ( force_k + λ_k · adv_k ),   k = 1, 2
 | `scripts/evaluate-baseline.sh` | 一键评测 Z-Image-Turbo 本身的 Qwen-Image-Bench 分数（老师基线，`--steps 9,2`），不需要参考集和训练 |
 | `eval_qib/` | Qwen-Image-Bench 本地评测：出图 → 官方 `judge.py` + Q-Judger 打分 → 和论文榜单对照的表 |
 | `scripts/ours_two-cards.sh`、`ours_four-cards.sh`、`ours_eight-cards.sh` | 新机器一键（2 / 4 / 8 卡）：环境 → 下载 → 评测环境 → 训练包 → 重建 context → 训练 → 评测；共用主体 `_ours_run.sh` |
+| `scripts/upload_results_hf.sh` | 训练机上一键把三个实验（ours / DMD2 / RDM-global）的 checkpoint 和训练日志传到一个公开 HF model repo `<账号>/z-image`（每个实验一个文件夹，`--repo` 可改名），评测结果经 `upload_eval_hf.sh` 进 `jiachengcui888/evaluation-result` |
 | `scripts/train.sh` | 训练入口（含 preflight） |
 | `tests/` | CPU 小模型测试（`pytest z-image/tests`） |
 
