@@ -23,6 +23,11 @@ Run it with the judge env's python (it imports ``judge.py`` from ``--bench``).
 fails (exit 1) when the judge answered without thinking -- an empty ``<think></think>`` before its
 JSON, as ms-swift 4.x does unless thinking is switched on (eval_qib/run_eval.sh --setup) -- in more
 than ``--max-empty`` of its answers. The leaderboard's answers all reason facet by facet first.
+
+    python judge_parallel.py relocate --input <run>/input.jsonl
+
+points rows whose ``image_path`` does not exist here at ``<run>/images/`` (the images were rendered on
+another machine); fails when an image is in neither place. A file with nothing to change is not rewritten.
 """
 from __future__ import annotations
 
@@ -76,6 +81,21 @@ def thinking_stats(judged_rows: list) -> tuple:
     return len(answers), sum(1 for a in answers if not thought(a))
 
 
+def relocate(rows: list, images: Path) -> tuple:
+    """(rows with every ``image_path`` valid here, how many changed, missing IDs)."""
+    out, changed, missing = [], 0, []
+    for r in rows:
+        path = Path(r["image_path"])
+        if not path.exists():
+            path = images.resolve() / path.name
+            if path.exists():
+                r, changed = {**r, "image_path": str(path)}, changed + 1
+            else:
+                missing.append(int(r["ID"]))
+        out.append(r)
+    return out, changed, missing
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -90,7 +110,21 @@ def main() -> int:
     c = sub.add_parser("check-thinking")
     c.add_argument("--judged", type=Path, required=True)
     c.add_argument("--max-empty", type=float, default=0.05)
+    r = sub.add_parser("relocate")
+    r.add_argument("--input", type=Path, required=True)
     a = ap.parse_args()
+
+    if a.cmd == "relocate":
+        rows, changed, missing = relocate(read_jsonl(a.input), a.input.parent / "images")
+        if missing:
+            print(f"[relocate] {len(missing)} of {len(rows)} images missing (e.g. ID {missing[0]})")
+            return 1
+        if changed:
+            with open(a.input, "w", encoding="utf-8") as f:
+                for row in rows:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            print(f"[relocate] {changed} image paths -> {a.input.parent / 'images'}")
+        return 0
 
     if a.cmd == "check-thinking":
         if not a.judged.exists():

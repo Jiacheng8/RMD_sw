@@ -26,7 +26,8 @@
 # --calibrate M     instead of rendering, re-judge release model M's own images (first --limit,
 #                   default 100) and compare with the release's stored verdicts (eval_qib/calibrate.py):
 #                   our total must land within 2.5 of the leaderboard judge's on the same images
-# --skip-generate / --skip-judge   re-use a stage's output
+# --skip-generate / --skip-judge   re-use a stage's output (--skip-judge needs no judge weights; images
+#                   rendered on another machine are fine: input.jsonl is re-pointed at <run>/images)
 # A stage whose output exists is skipped: images are resumed per file, judge parts per part (a part
 # interrupted mid-way starts over: judge.py writes its results only at the end).
 set -euo pipefail
@@ -144,7 +145,8 @@ fi
 
 # ---------------------------------------------------------------------------
 [[ -n "$NAME" ]] || die "--name <run name> (and --ckpt or --teacher-steps); see --help"
-[[ -f "$BENCH/judge.py" && -f "$JUDGE/config.json" ]] || die "run --setup first"
+[[ -f "$BENCH/judge.py" ]] || die "run --setup first"
+[[ $DO_JUDGE -eq 0 || -f "$JUDGE/config.json" ]] || die "run --setup first"
 RUN="$RUNS/$NAME"
 mkdir -p "$RUN/logs"
 say "Qwen-Image-Bench: $NAME -> $RUN"
@@ -196,6 +198,9 @@ fi
 
 if [[ $DO_JUDGE -eq 1 && ! -f "$RUN/input_bench_scores.json" ]]; then
   [[ -f "$RUN/input.jsonl" ]] || die "$RUN/input.jsonl missing: render first"
+  # rendered on another machine: its paths in input.jsonl mean nothing here
+  env -u PYTHONPATH "$ENV/bin/python" "$ZDIR/eval_qib/judge_parallel.py" relocate --input "$RUN/input.jsonl" \
+    || die "$RUN/images is incomplete"
   grep -q 'self.engine.template.enable_thinking = True' "$BENCH/backends/ms_swift_backend.py" \
     || die "the judge would run without thinking: run --setup again (it patches $BENCH/backends/ms_swift_backend.py)"
   IFS=, read -r -a JG <<< "${JUDGE_GPUS:-$(visible)}"
@@ -248,6 +253,9 @@ if [[ -n "$CALIB" ]]; then
   ( cd "$BENCH" && env PYTHONPATH="$ZDIR" "$ENV/bin/python" -m eval_qib.calibrate compare \
       --bench "$BENCH" --model "$CALIB" --run "$RUN" ) | tee "$RUN/calibration.txt"
   exit "${PIPESTATUS[0]}"
+fi
+if [[ ! -f "$RUN/input_bench_scores.json" ]]; then
+  info "rendered, not judged yet: $RUN"; exit 0
 fi
 say "scores"
 rdm python -m eval_qib.report "$RUN" --out "$RUN/report.md" | sed -n '1,20p'
