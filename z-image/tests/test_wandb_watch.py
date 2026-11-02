@@ -1,7 +1,7 @@
 """The W&B watcher's parsing helpers (no wandb run)."""
 import json
 
-from zimage_distill.wandb_watch import flat_numbers, image_score, section, step_of, world_of
+from zimage_distill.wandb_watch import OURS_LOSSES, flat_numbers, image_score, section, step_of, world_of
 
 
 def test_rows_become_metrics():
@@ -28,3 +28,11 @@ def test_probe_and_refresh_keys_get_their_own_section():
         assert section(k) == "cache/", k
     for k in ("loss", "force", "raw_mmd2", "s2/siglip2/mmd2", "s2/siglip2/repulsion", "gan/d_acc"):
         assert section(k) == "train/", k
+
+
+def test_ours_sends_only_the_chosen_losses():
+    for k in ("grad_norm", "s1/gan/dinov3_l/g_loss", "s2/gan/siglip2/d_loss", "s1/siglip2/mmd2", "s2/dinov3_l/mmd2"):
+        assert OURS_LOSSES.fullmatch(k), k
+    for k in ("loss_total", "raw_mmd2", "lr", "s1/force", "s2/gan/d_acc", "s2/gan/g_loss", "s2/gan/aimv2_huge/d_loss",
+              "s2/aimv2_huge/mmd2", "s2/siglip2/force", "s2/gan/siglip2/d_acc", "s2/siglip2/drift_mean"):
+        assert not OURS_LOSSES.fullmatch(k), k

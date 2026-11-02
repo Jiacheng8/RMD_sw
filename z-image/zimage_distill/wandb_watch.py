@@ -8,12 +8,12 @@ The launchers (``_ours_run.sh``, ``_rdm_global_run.sh``, ``_dmd2_run.sh``, via `
 start it in the background next to the run and stop it when they exit. Every ``--interval`` seconds
 it reads what is new in the run dir and logs it:
 
-* ``train/*``   every row of ``train_log.jsonl`` (the losses, per-step MMD / GAN terms, grad norm, lr,
-                cache, s/step: whatever the trainer logs), at wandb step = the training step, so the
-                default x axis is the trainer's own step number (ours and RDM: the optimizer step;
-                DMD2: the iteration); ``train/step`` holds it too
-* ``cache/*``   ours' staleness probe and cache refresh (``*drift*``, ``refresh*``: every
-                ``probe_every`` / refresh steps), in a section of their own
+* ``train/*``   every row of ``train_log.jsonl`` (RDM and DMD2: whatever the trainer logs; ours: only
+                :data:`OURS_LOSSES`, the file keeps the rest), at wandb step = the training step, so
+                the default x axis is the trainer's own step number (ours and RDM: the optimizer
+                step; DMD2: the iteration); ``train/step`` holds it too
+* ``cache/*``   the staleness probe and cache refresh of a run that logs them (``*drift*``,
+                ``refresh*``), in a section of their own; not sent for ours
 * ``perf/*``    s/step, elapsed hours, GPU-hours spent, progress and ETA against the planned total
                 (``--total``, else ``plan.json``); the plan itself goes into the run config
 * ``ckpt/step`` each ``step_*.pth`` as it appears
@@ -33,6 +33,7 @@ import argparse
 import json
 import math
 import os
+import re
 import signal
 import time
 from collections import deque
@@ -42,6 +43,8 @@ PROJECT = "zimage-distill"
 ENTITY = "sw-lmmd"                       # the project's W&B team
 SAMPLE_IMAGES = 24
 FACET = {0: 0.0, 1: 60.0, 2: 100.0}          # the bench's Fail / Pass / Excel
+#: What ours sends to W&B: per step, generator and critic loss and MMD on dinov3 and siglip2; total grad norm
+OURS_LOSSES = re.compile(r"grad_norm|s\d+/gan/(dinov3_l|siglip2)/[gd]_loss|s\d+/(dinov3_l|siglip2)/mmd2")
 
 
 def step_of(row: dict):
@@ -182,7 +185,8 @@ class Watcher:
             step = step_of(row)
             if step is None or step <= self.state["last_step"]:
                 continue
-            m = {section(k) + k: v for k, v in flat_numbers(row, "").items()}
+            m = {section(k) + k: v for k, v in flat_numbers(row, "").items()
+                 if self.a.kind != "ours" or OURS_LOSSES.fullmatch(k)}
             m["train/step"] = step
             sec = row.get("seconds")
             if isinstance(sec, (int, float)):

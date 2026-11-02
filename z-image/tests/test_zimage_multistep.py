@@ -275,6 +275,9 @@ def test_every_step_has_its_own_stream_cache_and_critic(store_root):
         for k in (1, 2):
             assert np.isfinite(logs[f"s{k}/force"])
             assert f"s{k}/gan/d_acc" in logs and f"s{k}/gan/lambda" in logs
+            for e in t.base_names:
+                assert f"s{k}/gan/{e}/d_loss" in logs and f"s{k}/gan/{e}/g_loss" in logs
+                assert f"s{k}/{e}/mmd2" in logs
         assert logs["gan/d_acc"] == logs["s2/gan/d_acc"]            # the console line: last step
         # critic k trained on step k's window, whose last B rows are this step's fresh rows
         for k in (0, 1):

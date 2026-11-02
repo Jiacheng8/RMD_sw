@@ -76,6 +76,10 @@ def test_critic_step_learns_to_separate(store):
     assert logs["gan/d_acc"] > 0.95 and logs["gan/d_real"] > logs["gan/d_fake"]
     assert not logs["gan/d_skipped"] and gan.updates == 200
     assert all(p.grad is None for p in gan.critic.parameters())   # nothing left for the generator
+    # per encoder, averaging to the logged total
+    assert np.mean([logs[f"gan/{n}/d_loss"] for n in NAMES]) == pytest.approx(logs["gan/d_loss"], rel=1e-9)
+    _, g_logs = gan.generator_loss({n: v.clone().requires_grad_(True) for n, v in fake.items()}, tau)
+    assert np.mean([g_logs[f"gan/{n}/g_loss"] for n in NAMES]) == pytest.approx(g_logs["gan/g_loss"], rel=1e-9)
 
 
 def test_r1_penalty_is_reported_and_finite(store):

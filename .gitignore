@@ -43,6 +43,14 @@ configs/*_kuma*.yaml
 configs/eval_flux_*_s20*.yaml
 assets/pickapic_train_prompts.jsonl
 
+# Generated locally, kept out of the repo: teaser renders (symlinks included), comparison pages, reports
+/teaser_render
+/teaser_render2
+/teaser_render2_1024
+/zimage_compare/
+/eval_report/
+/analysis/out/
+
 # OS / editor
 .DS_Store
 *.swp
