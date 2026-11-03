@@ -272,6 +272,21 @@ if [[ $DO_CONTEXTS -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# A config can name a text table of its own (qwen_text_repo): the store it trains on is then assembled from it.
+QWEN_REPO=$(sed -n 's/^qwen_text_repo:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$CONFIG")
+if [[ -n "$QWEN_REPO" ]]; then
+  QWEN_STORE="$PACK/reference_store_qwen"
+  if [[ -f "$QWEN_STORE/metadata.json" ]]; then
+    info "Qwen3 text  present: $QWEN_STORE"
+  elif [[ $DRY -eq 1 ]]; then
+    info "Qwen3 text  would download $QWEN_REPO -> $QWEN_STORE"
+  else
+    ( [[ -f "$ROOT/env.sh" ]] && source "$ROOT/env.sh"; export PYTHONPATH="$ZDIR:$REPO:${PYTHONPATH:-}"
+      crun python -m zimage_distill.qwen_text_store --source "$STORE" --out "$QWEN_STORE" --from-hub "$QWEN_REPO" ) \
+      || die "could not assemble the Qwen3 text store from $QWEN_REPO (see above)"
+  fi
+  STORE="$QWEN_STORE"
+fi
 TRAIN_ENV=(ASSETS="$ROOT" CONDA_ENV="$ENV_NAME" GPUS="$GPUS" REFERENCE_ROOT="$STORE" OUTPUT_DIR="$OUTPUT_DIR")
 TRAIN_ARGS=("$CONFIG")
 [[ -n "$STEPS" ]] && TRAIN_ARGS+=(--set "steps=$STEPS")
