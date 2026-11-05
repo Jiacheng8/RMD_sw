@@ -23,6 +23,7 @@ from .cache import GeneratedWindowCache
 from .config import CacheConfig, GANConfig, LRSchedule, MemoryPolicy, WindowConfig
 from .reference_store import ReferenceFeatureStore
 from .trainer import SWLMMDTrainer
+from .time_budget import TimeBudget
 from .window_schedule import (MixedGroupSchedule, SlidingWindowSchedule, build_grouped_row_order,
                               split_groups)
 
@@ -434,6 +435,12 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
 
     probe_every = int(getattr(cfg, "probe_every", 0) or cache_cfg.refresh_every_windows or 0)
     drift = None
+    budget = None
+    if getattr(cfg, "time_budget_gpu_hours", None):
+        budget = TimeBudget(cfg.time_budget_gpu_hours, out_dir, getattr(cfg, "time_budget_calib_steps", 60),
+                            device=device)
+        budget.apply_saved_plan(trainer.lr_schedule)
+        budget.started = t0
     for _ in range(max(0, int(cfg.steps) - trainer.step_idx)):
         step_t = time.time()
         logs = trainer.step()
@@ -460,6 +467,12 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
                             logs["cache_max_age"], logs["seconds"], gan)
             jsonl.write(json.dumps(logs) + "\n")
             jsonl.flush()
+        if budget is not None:
+            stop = budget.after_step(trainer.step_idx, trainer.lr_schedule)
+            save_freq = resume_every = budget.checkpoint_every() or int(cfg.steps) + 1
+            if stop:                                  # the final save below covers this step
+                save_freq = resume_every = trainer.step_idx + 1
+                break
         if trainer.step_idx % save_freq == 0:
             checkpoint()
         if save_resume and trainer.step_idx % resume_every == 0:

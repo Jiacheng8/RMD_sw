@@ -1,0 +1,28 @@
+# K128 · GAN (sw_lmmd_train_h100_2gpu_gan.yaml) with a larger window, K = 512, on a time budget instead of 2000 steps.
+#
+#   bash scripts/run_flux_time_budget.sh --root <root>
+#
+# `extends` merges top-level keys only, so the blocks below are restated in full.
+extends: sw_lmmd_train_h100_2gpu_gan.yaml
+exp_name: flux-k512-b32-gan-4gph
+window:
+  size: 512                   # K
+  stride: 32                  # B
+  cyclic: true
+  order_seed: 3407
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+active_global_batch: 32
+
+memory:
+  shard: none
+  grad_reduce: mean
+  optimizer: adamw8bit
+  param_dtype: fp32
+  battery_bf16: false
+  micro_batch: 4
+  encoder_offload: false
+
+time_budget_gpu_hours: 4
+time_budget_calib_steps: 60
+steps: 100000                 # an upper bound: the budget sets the total, and the lr decays over it

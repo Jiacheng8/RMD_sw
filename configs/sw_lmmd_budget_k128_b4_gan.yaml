@@ -1,0 +1,33 @@
+# K128 · GAN (sw_lmmd_train_h100_2gpu_gan.yaml) with 4 fresh rows per step instead of 32, on a time budget.
+# The probe and refresh keep their cost per fresh row: every 80 / 160 steps here is 320 / 640 rows, as 10 / 20 at B = 32.
+#
+#   bash scripts/run_flux_time_budget.sh --root <root>
+#
+# `extends` merges top-level keys only, so the blocks below are restated in full.
+extends: sw_lmmd_train_h100_2gpu_gan.yaml
+exp_name: flux-k128-b4-gan-4gph
+window:
+  size: 128                   # K
+  stride: 4                   # B
+  cyclic: true
+  order_seed: 3407
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+active_global_batch: 4
+memory:
+  shard: none
+  grad_reduce: mean
+  optimizer: adamw8bit
+  param_dtype: fp32
+  battery_bf16: false
+  micro_batch: 2              # 4 rows over 2 GPUs; the launcher sets 4 / GPUs
+  encoder_offload: false
+cache:
+  refresh_every_windows: 160
+  refresh_probe_rows: 64
+  drift_threshold: 0.05
+probe_every: 80
+
+time_budget_gpu_hours: 4
+time_budget_calib_steps: 200
+steps: 1000000                # an upper bound: the budget sets the total, and the lr decays over it

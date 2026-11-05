@@ -1,0 +1,42 @@
+# iRDM's objective on the SW-LMMD stack, on a time budget: every step renders K = B = 10240 fresh rows, with exact
+# repulsion among them and attraction to the whole reference (Nystrom, m = 4096). No cache, no GAN critic; constant lr,
+# as iRDM at rollout size 10240. Encoders, store, bandwidths and memory policy are K128 · GAN's.
+#
+#   bash scripts/run_flux_time_budget.sh --root <root>
+#
+extends: ref_ablation_base.yaml
+exp_name: n10240-4gph         # run dir: global-n10240-4gph
+
+window:
+  size: 10240                 # K
+  stride: 10240               # B
+  cyclic: true
+  order_seed: 3407
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+active_global_batch: 10240
+
+lr_schedule:
+  name: constant
+
+gan:
+  enabled: false
+
+cache:
+  refresh_every_windows: 0
+  refresh_probe_rows: 64
+  drift_threshold: 0.0
+probe_every: 0
+
+ref_ablation:
+  ref_mode: global
+  ref_seed: 0
+  nystrom_dir: /data/thor/jiacheng/rdm-sets/sw_lmmd/ref_ablation/nystrom_m4096
+  pre_diagnostic: false
+  diagnostic_random_draws: 8
+  diagnostic_exact_global: false
+  grad_norms: false
+
+time_budget_gpu_hours: 4
+time_budget_calib_steps: 1
+steps: 1000                   # an upper bound: the budget ends it

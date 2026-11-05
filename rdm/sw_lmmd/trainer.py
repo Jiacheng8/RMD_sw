@@ -300,8 +300,13 @@ class SWLMMDTrainer:
         window = self.schedule.next()
         self._pending_window = window
         local_ids = partition_rows(window.retained_ids)
-        feats = self._encode_no_grad(self._chunks(local_ids))
-        gathered = {name: all_gather_detached(feats[name]) for name in self.encoder_names}
+        if window.retained_ids.size:
+            feats = self._encode_no_grad(self._chunks(local_ids))
+            gathered = {name: all_gather_detached(feats[name]) for name in self.encoder_names}
+        else:                                                   # K = B: every row is fresh, nothing to retain
+            gathered = {name: self.store.reference_joint_features(name, window.active_ids[:1], device=self.device,
+                                                                  dtype=self.feature_dtype, joint=self.joint)[:0]
+                        for name in self.encoder_names}
         self.cache.initialize(window.retained_ids, gathered, step=-1)
         return {"bootstrap_rows": int(window.retained_ids.size),
                 "bootstrap_rows_per_rank": int(local_ids.size)}
