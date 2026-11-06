@@ -19,12 +19,14 @@
 # The repo is PUBLIC: created public, and switched to public if it already exists as private.
 #
 # --watch SECONDS: a pass every SECONDS while the run goes on (start it in its own tmux window next
-# to training): each pass stages and uploads only what is new -- every finished checkpoint, the
-# growing train_log.jsonl and logs, each eval_*/ dir once its summary.json exists. resume.pth (23 GB,
-# rewritten every few hundred steps) is held back until a final pass, which runs once
-# <run>/eval_summary.md appears (the one-command launchers write it when the evaluation ends) and
-# then stops; a failed pass (network) is retried at the next one. A run trained with --no-eval
-# writes no eval_summary.md: stop with Ctrl-C and run the plain command once more.
+# to training, before or after training starts: it waits for the run dir to appear). Each pass
+# stages and uploads only what is new -- every finished checkpoint, resume.pth whenever the trainer
+# has rewritten it (23 GB, every `resume_every` steps; --no-resume skips it), the growing
+# train_log.jsonl and logs, each eval_*/ dir once its summary.json exists. A final pass runs once the
+# run is finished -- <run>/run_done (experiments/no_cache/run_nocache.sh writes it when training,
+# and the evaluation if any, are over) or <run>/eval_summary.md -- and then the watch stops. A failed
+# pass (network) is retried at the next one. Every uploaded resume.pth version stays in the repo's
+# history (hf upload-large-folder adds commits), ~23 GB each.
 #
 # Safe while training is still running: files are snapshotted into <root>/hf_upload/<run name>/ as
 # hard links (the trainer replaces checkpoints and resume.pth with os.replace, so a link keeps the
@@ -56,6 +58,12 @@ done
 [[ -n "$ROOT" ]] || { echo "need --root <data root> (e.g. /root/RMD_data)" >&2; exit 2; }
 [[ "$WATCH" =~ ^[0-9]+$ ]] || { echo "--watch takes a number of seconds, got '$WATCH'" >&2; exit 2; }
 RUN="${RUN:-$ROOT/sw_lmmd/work_dirs/sw-lmmd-flux-h100-2gpu}"
+if [[ $WATCH -gt 0 && $DRY -eq 0 ]]; then
+  until [[ -d "$RUN" ]]; do
+    echo "[upload] waiting for $RUN to appear (training not started yet); checking every 60 s"
+    sleep 60
+  done
+fi
 [[ -d "$RUN" ]] || { echo "no run dir $RUN" >&2; exit 1; }
 NAME="$(basename "$RUN")"
 STAGE="$ROOT/hf_upload/$NAME"
@@ -185,14 +193,14 @@ EOF
 if [[ $WATCH -eq 0 ]]; then
   one_pass "$WITH_RESUME"
 else
-  info "watch: a pass every ${WATCH}s; resume.pth only in the final pass, which runs once" \
-       "$RUN/eval_summary.md exists (Ctrl-C to stop earlier)"
+  info "watch: a pass every ${WATCH}s$( [[ $WITH_RESUME -eq 1 ]] && echo ', resume.pth included' );" \
+       "a final pass once $RUN/run_done or eval_summary.md exists (Ctrl-C to stop earlier)"
   while true; do
-    if [[ -f "$RUN/eval_summary.md" ]]; then
-      info "eval_summary.md is there: final pass"
+    if [[ -f "$RUN/run_done" || -f "$RUN/eval_summary.md" ]]; then
+      info "the run is finished: final pass"
       if one_pass "$WITH_RESUME"; then break; fi
       info "final pass incomplete; retrying in ${WATCH}s"
-    elif ! one_pass 0; then
+    elif ! one_pass "$WITH_RESUME"; then
       info "pass incomplete (network?); retrying in ${WATCH}s"
     fi
     info "next pass at $(date -d "+${WATCH} seconds" +%H:%M:%S) (Ctrl-C to stop)"

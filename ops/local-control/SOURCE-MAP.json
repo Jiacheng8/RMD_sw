@@ -1,0 +1,97 @@
+{
+  "files": [
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/h20-continue-a.sh",
+      "repository_path": "ops/local-control/historical/h20-continue-a.sh",
+      "bytes": 3247,
+      "sha256": "87827e8f0a47756a17b981d5dd73b27f1e9cefc322a2e67e09420fd9a22434dd",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/h20-handoff-prefetch.py",
+      "repository_path": "ops/local-control/historical/h20-handoff-prefetch.py",
+      "bytes": 5146,
+      "sha256": "8fc973b6a843c26f49fc0ebe74c8d5b4fb88c776d0857dca967bc84ba0c90a96",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/h20-judge-prefetch-v2.sh",
+      "repository_path": "ops/local-control/historical/h20-judge-prefetch-v2.sh",
+      "bytes": 3578,
+      "sha256": "908ba75c0f9da886feb5177a4918bd87f2e6888187205e272dabbc9ad3e984ce",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/h20-judge-prefetch.sh",
+      "repository_path": "ops/local-control/historical/h20-judge-prefetch.sh",
+      "bytes": 3078,
+      "sha256": "5bf8cd9800a4870f9adfdefbc3bf723cc7a765b0f047b8e1c2542bb30c78e716",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/h20-observe.py",
+      "repository_path": "ops/local-control/historical/h20-observe.py",
+      "bytes": 23126,
+      "sha256": "0cf900d5443458928d4a13b29181b0ddf055198fb32fb3aafb61033cd0bbe529",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/h20-prefetch-reference.py",
+      "repository_path": "ops/local-control/historical/h20-prefetch-reference.py",
+      "bytes": 12466,
+      "sha256": "78e20c64315cb25812aff121b8c2424e6bf54b667e2b5cf1ef29743f0c4a97b2",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/h20-recovery-ssh.py",
+      "repository_path": "ops/local-control/current/h20-recovery-ssh.py",
+      "bytes": 506,
+      "sha256": "f6e5e2f7471ff2705862816504c5cd5e7c3d8618581624c314a396c510d9d517",
+      "scope": "current existing-owned-ControlMaster client"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/h20-remote-env.sh",
+      "repository_path": "ops/local-control/historical/h20-remote-env.sh",
+      "bytes": 1759,
+      "sha256": "37932e8a9811f49d82bdc8944ed83de2c4005ff2a0b4df3228e0d4d40b4be19e",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/h20-resume-a-50.sh",
+      "repository_path": "ops/local-control/historical/h20-resume-a-50.sh",
+      "bytes": 3854,
+      "sha256": "24fe1e209145caf0e1d30949c0503d4f029486edc8876c44b76c094ed3096696",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/h20-run-b-reuse.sh",
+      "repository_path": "ops/local-control/historical/h20-run-b-reuse.sh",
+      "bytes": 3410,
+      "sha256": "e3beea3b224eaf3ba0b23e9125b1bd0d419546ff3c1e8435cb43f7275b435fe4",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/plot_A_losses.py",
+      "repository_path": "ops/local-control/historical/plot_A_losses.py",
+      "bytes": 2472,
+      "sha256": "d6a7d59af50a48afaf9a6151d1db6d1d198cc61c81ca29122cee22b029a28692",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/rdm_macbook_relay_mux.py",
+      "repository_path": "ops/local-control/historical/rdm_macbook_relay_mux.py",
+      "bytes": 21504,
+      "sha256": "257764e8e2577569aef88891c20f56df3d7eaa6279017243bd3b9bd35d944e8b",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    },
+    {
+      "source": "/Users/shaoshitong/Documents/Codex/2026-11-02/chat-thread-codex-threads-01a19ad1-3f77-2/work/rdm_relay_orphan_watchdog.py",
+      "repository_path": "ops/local-control/historical/rdm_relay_orphan_watchdog.py",
+      "bytes": 14714,
+      "sha256": "cb81f312ead6e36bdcdb4a7b14aa4b444ceb94449291b5c7cb51524923447b62",
+      "scope": "historical launcher/download/relay/observer/plot source; retained for provenance"
+    }
+  ],
+  "credential_state_copied": false,
+  "excluded_inspection_only_vendor_snapshot": "work/diffusers-040-attention-dispatch.py; unmodified third-party source inspected during environment diagnosis"
+}

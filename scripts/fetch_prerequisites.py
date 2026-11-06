@@ -114,6 +114,10 @@ ITEMS: list[Item] = [
          gated=True, note="native VAE the flux2 loader resolves; GATED repo"),
     Item("qwen3_4b",       "flux", "hf", 8.05, "Qwen/Qwen3-4B",
          note="FLUX.2 prompt encoder (bf16 build; works offline, no fp8 kernels)"),
+    # ---- Z-Image-Turbo (z-image/): the 8-step teacher / 2-step student init, its VAE, and the
+    # Qwen3-4B prompt encoder that rebuilds a training pack's contexts ----
+    Item("zimage_turbo",   "zimage", "hf", 31.0, "Tongyi-MAI/Z-Image-Turbo",
+         note="transformer 6.15 B (bf16) + VAE + Qwen3-4B text encoder + tokenizer"),
     # ---- PickScore: the eval metric (eval_checkpoint.sh) and the 02 render curation ----
     Item("pickscore",      "pickscore", "hf", 3.94, "yuvalkirstain/PickScore_v1",
          patterns=["config.json", "model.safetensors"], note="PickScore_v1 (CLIP-H)"),
@@ -141,6 +145,7 @@ ITEMS: list[Item] = [
 
 DEFAULT_GROUPS = ["encoders", "text", "flux", "pickscore", "flux2src", "coco", "assets"]
 ALL_GROUPS = ["encoders", "text", "evalenc", "flux", "pickscore", "flux2src", "coco", "assets",
+              "zimage",
               "student", "pmfh"]
 
 
@@ -553,7 +558,8 @@ def main() -> int:
     if args.dry_run:
         say("--dry-run: nothing written.")
         write_env(root, dry=True, hub_cache=hub_cache)
-        print_next_steps(root)
+        if groups != {"zimage", "encoders"}:      # the FLUX/COCO build guide; z-image has its own
+            print_next_steps(root)
         return 0
 
     for d in ("hf", "torch", "dreamsim", os.path.join("datasets", "coco"), "src"):
@@ -595,7 +601,8 @@ def main() -> int:
     say(f"\nfetched {len(ok)}/{len(plan)} items.")
     if failed:
         say(f"incomplete: {', '.join(failed)}  -- re-run to resume (downloads are cached).")
-    print_next_steps(root)
+    if groups != {"zimage", "encoders"}:          # the FLUX/COCO build guide; z-image has its own
+        print_next_steps(root)
     return 1 if failed else 0
 
 

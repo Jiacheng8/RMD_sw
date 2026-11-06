@@ -1,0 +1,141 @@
+{
+  "dataset": "Custom diagnostic stress cases",
+  "revision": "mmd2-complex-v1",
+  "suite": "complex-cases-v1",
+  "language": "en with exact Chinese/English text targets",
+  "selection": "Fixed before inference in response to the user's request for substantially harder cases; not official Qwen-Image-Bench IDs or benchmark scores",
+  "file_prefix": "case",
+  "seeds": [
+    0,
+    1
+  ],
+  "cases": [
+    {
+      "ID": 9001,
+      "label": "Four diners / identities, eight hands, shared objects",
+      "prompt_en": "Photorealistic wide view of exactly four adults seated around a small dining table, all four faces and all eight hands visible. From the viewer's left to right: a woman in a red cardigan, a bearded man in a blue shirt, an elderly woman in green, and a short-haired man in a mustard sweater. The red-cardigan woman holds a red cup in her own left hand and passes one white plate with her right hand to the blue-shirt man's left hand; their hands touch opposite edges of that same plate. His right hand rests beside a knife. The elderly woman cradles a ceramic soup bowl with both hands. The mustard-sweater man pours tea from a glass teapot with his right hand into a cup while his left steadies its saucer. Exactly four drinking cups are present in total, including the red cup held by the woman. Natural overlapping arms, consistent clothing identities, realistic fingers, warm restaurant lighting, documentary photography.",
+      "checks": [
+        "exactly four people",
+        "left-to-right red/blue/green/mustard identity binding",
+        "eight visible hands attached to the correct bodies",
+        "one plate shared by two specified hands",
+        "red cup in the woman's left hand",
+        "two hands on the elderly woman's bowl",
+        "teapot, stream and cup aligned",
+        "exactly four drinking cups"
+      ]
+    },
+    {
+      "ID": 9002,
+      "label": "Four musicians / full bodies and instrument contacts",
+      "prompt_en": "A realistic full-body photograph of exactly four adult musicians rehearsing on one small stage. From the viewer's left to right: a woman in a red dress playing violin, a man in a blue shirt playing a silver transverse flute, a seated woman in black playing a cello, and a man in green playing a snare drum with two wooden sticks. The violinist's own left fingertips press the fingerboard and her right hand grips the bow at its frog; the violin rests between chin and shoulder. The flutist holds the flute horizontally to his right with both hands and his lips at the mouthpiece. The cellist's left hand presses strings, her right hand draws a bow, and the cello endpin touches the floor between her feet. The drummer holds one stick in each hand above one drum. All four faces, eight arms, and feet are visible despite overlapping instruments. Physically correct contacts, realistic hands and instrument geometry, no cropped bodies.",
+      "checks": [
+        "exactly four full-body musicians",
+        "four clothing colors in specified order",
+        "one violin, one flute, one cello and one snare",
+        "violin chin/shoulder/finger/bow contacts",
+        "horizontal flute and correct mouth contact",
+        "cello endpin on floor",
+        "one drumstick per drummer hand",
+        "no merged arms or substituted instruments"
+      ]
+    },
+    {
+      "ID": 9003,
+      "label": "Mirror / two people, asymmetric poses and reflection",
+      "prompt_en": "Photorealistic dressing-room scene with exactly two real adults in front of a large flat mirror, both their bodies and their corresponding reflections visible in one image. The woman on the viewer's left wears a bright red jacket and holds a green mug in her own right hand while touching a silver necklace with her left. The man on the viewer's right wears a blue shirt and holds a black phone in his own left hand; his right hand rests on the woman's shoulder. The mirror faithfully reflects these same two people, their clothing, hand positions, mug, necklace and phone, with geometrically correct mirror reversal and matching expressions. On the counter below the mirror are exactly three red apples, one closed blue book and one white vase containing exactly three yellow tulips. The same counter arrangement appears in the reflection. Correct foreground occlusion, continuous mirror edges, natural skin, detailed fingers, ordinary studio lighting.",
+      "checks": [
+        "two physical people and two corresponding reflections",
+        "red/blue clothing remains consistent in mirror",
+        "asymmetric hands correctly reflected",
+        "one green mug and one black phone with reflected counterparts",
+        "man's hand contacts woman's shoulder",
+        "three apples",
+        "one blue book and one vase",
+        "three yellow tulips",
+        "counter occlusion and mirror geometry consistent"
+      ]
+    },
+    {
+      "ID": 9004,
+      "label": "Bookstore / multiple Chinese-English signs and prices",
+      "prompt_en": "A realistic straight-on street photograph of a small Chinese bookstore with several clearly readable signs. Across the top, a large red sign says exactly '晨光书店'. Directly beneath it, a smaller line reads exactly 'OPEN 09:00–21:00'. The left window displays one vertical poster reading exactly '读书让生活更美好'. On the right stands a chalkboard with exactly three aligned rows: '红茶 ¥12', '拿铁 ¥18', and '可可 ¥15', in that order. Behind the middle window are exactly three displayed books whose covers are labeled '1', '2', and '3' from left to right. Exactly three adult pedestrians occupy the lower quarter of the frame: a woman in a blue coat holding a yellow umbrella, a man carrying a red backpack, and an elderly woman holding a white shopping bag. Their bodies overlap naturally without covering any required sign. Preserve all Chinese characters, Latin letters, punctuation, digits and price-to-drink associations. Detailed realistic architecture and people, normal daylight.",
+      "checks": [
+        "exact Chinese shop name",
+        "exact opening-hours line",
+        "complete vertical Chinese slogan",
+        "three price rows in specified order",
+        "correct drink-price binding",
+        "three displayed books labeled1/2/3",
+        "exactly three pedestrians",
+        "blue coat/yellow umbrella/red backpack/white bag bindings",
+        "signs remain readable and unobscured"
+      ]
+    },
+    {
+      "ID": 9005,
+      "label": "Counting / nested objects, spatial layout and refraction",
+      "prompt_en": "Photorealistic still life viewed at a 45-degree angle over a wooden table. On the viewer's left, exactly three red apples form a triangle, two in front and one behind. On the right, exactly two cobalt-blue ceramic bowls sit side by side; each bowl contains exactly one green pear with its stem visible above the rim. A single yellow banana lies diagonally behind the apples with its tip pointing to the upper right. In the foreground are exactly two transparent drinking glasses half filled with water, each containing exactly one stainless-steel teaspoon leaning toward the viewer's left. The glass rims, water surfaces and spoon shafts are clearly visible, with physically plausible refraction where each spoon enters the water. The near glass partially occludes one apple, but all three apples remain countable. Accurate object counts, correct color-to-object binding, natural contact shadows, clear material differences, crisp geometry, diffuse window light.",
+      "checks": [
+        "three red apples in triangular layout",
+        "two blue bowls",
+        "one green pear inside each bowl",
+        "one yellow banana behind apples with specified direction",
+        "two half-full clear glasses",
+        "one spoon per glass",
+        "spoons lean left",
+        "continuous glass rims and plausible water refraction",
+        "partial occlusion preserves counts"
+      ]
+    },
+    {
+      "ID": 9006,
+      "label": "Crowded crossing / seven pedestrians, two cyclists and occlusion",
+      "prompt_en": "A wide documentary photograph of a busy zebra crossing, viewed from sidewalk height. Exactly seven pedestrians walk across it, and exactly two adult cyclists ride behind them; all nine people must be individually countable. Among the pedestrians, a woman in a red coat at the far left holds one yellow umbrella, a man in a blue jacket pushes an empty black wheelchair in the center, an elderly man with a white cane walks on the right, and four other adults wear gray, green, purple and brown. The wheelchair has two large rear wheels and two small front casters, and the blue-jacket man's two hands visibly grip its handles. The two cyclists, one wearing orange and one wearing black, each ride a separate bicycle with exactly two wheels. Natural overlaps occur between pedestrians, umbrella, wheelchair and bicycles without fused faces, missing legs or extra riders. A background blue street sign reads exactly '中山路'. Detailed full bodies, realistic street perspective, overcast daylight.",
+      "checks": [
+        "seven pedestrians plus two cyclists",
+        "all nine people individually countable",
+        "red coat and yellow umbrella on far left",
+        "blue-jacket person and empty wheelchair in center",
+        "both hands grip wheelchair handles",
+        "wheelchair wheel geometry",
+        "white cane on right",
+        "two distinct bicycles with four bicycle wheels total",
+        "readable 中山路 sign",
+        "plausible overlapping limbs"
+      ]
+    },
+    {
+      "ID": 9007,
+      "label": "Veterinary exam / three people, six hands and four paws",
+      "prompt_en": "A realistic veterinary examination with exactly three adults and one black-and-white dog. The dog stands on a metal examination table with all four paws visible and only one head and tail. A veterinarian in a blue coat stands on the viewer's left, holding a stethoscope chest piece against the dog's chest with her own right hand and gently steadying the dog's head with her left. On the viewer's right, an owner in a red sweater places his left hand on the dog's back while his right hand holds a looped green leash that connects continuously to the dog's collar. An assistant in green stands behind the table, holding a white clipboard in her left hand and writing with a black pen in her right. Show all three faces and all six hands attached to the correct arms, with realistic fingers and contact pressure. The stethoscope tubing and leash must remain separate and continuous. Natural occlusion, calm expressions, believable anatomy, detailed clinical interior, soft daylight.",
+      "checks": [
+        "three people and one dog",
+        "four visible paws, one head and one tail",
+        "blue vet right-hand stethoscope contact",
+        "blue vet left hand steadies head",
+        "red owner left hand on dog's back",
+        "right hand holds continuous green leash connected to collar",
+        "assistant left clipboard/right pen",
+        "six hands with correct body attachment",
+        "stethoscope and leash remain distinct"
+      ]
+    },
+    {
+      "ID": 9008,
+      "label": "Bicycle repair / two bodies, four hands and mechanical geometry",
+      "prompt_en": "Photorealistic bicycle repair workshop with exactly two adult mechanics and one bicycle, both people shown full body. A mechanic in blue overalls stands on the viewer's left, holding the bicycle's front wheel with his own left hand while his right hand uses a silver spanner on that wheel's axle nut. An assistant in an orange shirt stands on the right, supporting the handlebars with her right hand and the top tube with her left. All four hands visibly touch the specified distinct bicycle parts. The bicycle has exactly two circular wheels with coherent spokes, one saddle, one handlebar assembly and one continuous chain around its chainring and rear sprocket. The front wheel is mounted in its fork, and one wheel partially occludes the blue-overall mechanic's shins without erasing or duplicating his legs. White lettering on the frame reads exactly 'CITY 24'. Realistic fingers, correct tool-to-nut alignment, continuous frame tubes, detailed workshop background, natural lighting.",
+      "checks": [
+        "two full-body people and one bicycle",
+        "blue/orange identity binding",
+        "left mechanic left wheel/right spanner",
+        "assistant right handlebars/left top tube",
+        "four correct hand-object contacts",
+        "exactly two wheels with coherent spokes",
+        "continuous chain and frame geometry",
+        "occlusion preserves both people's legs",
+        "exact CITY 24 lettering"
+      ]
+    }
+  ]
+}

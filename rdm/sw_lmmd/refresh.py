@@ -26,6 +26,8 @@ from .sharding import all_gather_detached, partition_rows
 
 def _rollout_rows(trainer, row_ids: np.ndarray) -> dict:
     """No-grad re-encode of ``row_ids``, gathered so every rank holds identical features."""
+    if callable(getattr(trainer, 'rollout_refresh', None)):
+        return trainer.rollout_refresh(row_ids)
     local = partition_rows(row_ids)
     feats = trainer._encode_no_grad(trainer._chunks(local))
     return {name: all_gather_detached(feats[name]) for name in trainer.encoder_names}
@@ -68,6 +70,8 @@ def probe_drift(trainer, window, n_rows: int = 64, seed: int | None = None) -> d
         out[f"drift_age_{age}"] = float(np.mean(vals))
     out["drift_probe_rows"] = int(n)
     out["drift_mean"] = float(np.mean([v for vals in per_bucket.values() for v in vals]))
+    if callable(getattr(trainer, 'probe_spatial_cache', None)):
+        out.update(trainer.probe_spatial_cache(rows, fresh))
     return out
 
 
@@ -80,7 +84,10 @@ def refresh_retained(trainer, window) -> dict:
     for name in trainer.encoder_names:
         d = trainer.cache.refresh_retained(name, rows, fresh[name], step=window.step)
         drifts.append(float(d.mean()))
-    return {"refreshed_rows": int(rows.size), "refresh_drift_mean": float(np.mean(drifts))}
+    logs = {"refreshed_rows": int(rows.size), "refresh_drift_mean": float(np.mean(drifts))}
+    if callable(getattr(trainer, 'refresh_spatial_cache', None)):
+        logs.update(trainer.refresh_spatial_cache(rows, fresh, window.step))
+    return logs
 
 
 def should_refresh(trainer, window, measured_drift: float | None, cfg) -> bool:

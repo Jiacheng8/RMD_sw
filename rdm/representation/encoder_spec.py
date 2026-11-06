@@ -28,7 +28,7 @@ class Split(str, Enum):
 
 
 # Backbone families (one wrapper per family in rdm.representation.backbones).
-SOURCES = ("inception", "timm", "webssl", "dreamsim", "radio", "flux_vae")
+SOURCES = ("inception", "timm", "webssl", "dreamsim", "radio", "flux_vae", "qwen3_vl")
 
 
 @dataclass(frozen=True)

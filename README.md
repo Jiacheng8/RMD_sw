@@ -12,6 +12,83 @@
 
 ## What this fork is
 
+### Current H20 protocol: two separate experiments (2026-11-06)
+
+Run **both groups from the original pretrained Z-Image-Turbo**, with independent
+optimizers, sliding windows and output directories. Group2 must not resume from
+Group1. The ablation tests whether adding GAN improves on MMD alone.
+
+| Group | Generator objective | Discriminator | Configuration |
+|---|---|---|---|
+| 1: MMD only | MMD-force surrogate | Disabled; no critic is constructed or updated | [MMD-only YAML](z-image/configs/zimage_2step_1024_dino_qwenvl_k512_b64_mmd_only_from0.yaml) |
+| 2: MMD + GAN | Same MMD-force + fixed `5e-5 × GAN-G` | Softplus GAN, DINOv3 + Qwen3-VL spatial heads | [MMD+GAN YAML](z-image/configs/zimage_2step_1024_dino_qwenvl_k512_b64_fixed_from0.yaml) |
+
+**Keep the following settings identical between groups:**
+
+- 1024 px, two generation steps, sigmas `[1.0, 0.75]`, renoise enabled;
+  pretrained0 initialization, training seed0, the same reference data and prompt order.
+- MMD image encoders: frozen **DINOv3 + Qwen3-VL-4B-Instruct**. No AIM or SigLIP.
+  Qwen3-4B text features and the student's original text conditioning are unchanged.
+- Window `K=512`, active global batch/stride `B=64`,448 retained rows per step.
+  Two GPUs × microbatch2 × accumulation16; FA3 and checkpoint groups of two blocks.
+- G LR warms up for100 updates to `2.83e-5`, then cosine decays to **`1.415e-5`
+  on update500**. GAN and MMD share this G optimizer in Group2.
+- Global G gradient clipping at4.0;500 total updates; retain every50-update
+  student checkpoint, plus rolling resume. Log raw MMD² separately from its
+  force surrogate. All weights, data, caches and environments stay remote.
+
+**Group2 only:** no gradient-norm weighting or gradient-ratio controller.
+The GAN coefficient is fixed at `5e-5`; MMD is unchanged. GAN-G starts on update51
+following50 D-only warmup updates. Both reference and generated images pass
+through the same frozen DINOv3/Qwen-VL spatial encoders and preprocessing.
+D LR follows a step-based cosine from `1e-5` to **`5e-6` on update500**, then
+holds; loss-driven LR adaptation is disabled. D gradients are clipped at4.0
+after chunk accumulation and cross-rank mean. Report original losses; clipping
+bounds gradients rather than altering logged loss values. No per-layer or
+parameter-update telemetry is added.
+
+#### Run the pair
+
+On H20 with the existing data/environment layout, from the source directory:
+
+```bash
+# Group1 first, then a separate fresh0 Group2 run, using physical GPUs6/7.
+bash ops/h20-run-k512-b64-fixed.sh all
+
+# Alternatively run either group independently:
+bash ops/h20-run-k512-b64-fixed.sh mmd-only
+bash ops/h20-run-k512-b64-fixed.sh mmd-gan
+```
+
+The entry waits for GPUs6/7 to become idle; it never terminates foreign jobs.
+Each group passes CPU checks and three complete bounded GPU updates plus a
+probe/refresh before its formal fresh0 run. Group1 validates G/MMD updates;
+Group2 additionally validates both D updates and the active fixed-weight GAN-G
+path. Existing outputs are never overwritten or silently restarted.
+The two experiment names end in `k512-b64-mmd-only-from0` and
+`k512-b64-fixed-from0`, with separate logs, archive receipts and output directories.
+
+#### Compare the results
+
+For both groups, retain checkpoints50/100/…/500 and compare the same complex
+portrait/multi-object/text-layout prompts, seeds and sampling settings against
+pretrained0. Keep full1024-pixel images. Plot every recorded iteration of raw
+MMD² and G training loss; Group2 also reports D/G adversarial losses and G/D LR.
+Group1 has no D/GAN curves. Evaluate both final500 checkpoints using the same
+full Qwen-Image-Bench1024 protocol and official aggregation, alongside the
+original Turbo2-step and9-step baselines. Compare image quality and benchmark
+scores; G total losses from the two different objectives are not directly
+comparable. These are experiment requirements, not completed results.
+
+- [Implementation, clipping, storage and resume limitations](ops/H20-K512-B64-FIXED.md)
+- [Mac control and historical orchestration source](ops/local-control/README.md)
+
+Historical configs and audit scripts are retained for reproducibility. Older
+three-encoder MMD and adaptive-gradient-weight experiments are **not** the
+current two-group protocol. Weights, environments and credentials are not in Git.
+
+### Original method overview
+
 Upstream **iRDM** distills a one-step image generator by matching generated and reference
 feature distributions under a battery of frozen encoders. Its loss compares a *large fresh
 rollout* — 10,240 generated images per optimizer step for the FLUX run — against a reference
@@ -27,9 +104,10 @@ This fork replaces that objective with **SW-LMMD**, which
 Per-step fresh rollouts drop **10,240 → 128**. Everything else — the encoder battery, the
 joint image-text feature, GradCache, the generator wrapper — is reused unchanged.
 
-> **Status.** The method layer is implemented and proven (124 tests, incl. the two invariants
+> **Original method-layer status.** The method layer is implemented and proven (124 tests, incl. the two invariants
 > below). It has **never been run on the real 4B model**: every test uses a toy generator and a
-> mock battery, and the reference store is still being built. See [Status](#status).
+> mock battery, and the reference store is still being built. This is the original FLUX-era
+> status; the current H20 Z-Image work is documented above. See [Status](#status).
 
 ---
 
@@ -129,7 +207,11 @@ exactly:
 So one config ports from a single GPU to a 32-rank job unchanged. `B = 128` divides 1, 2, 4, 8,
 16 and 32.
 
-### Optional: an adversarial term
+### Historical optional adaptive adversarial term
+
+> This section describes the original optional adaptive implementation. The
+> current two-group H20 protocol above disables adaptive weighting and uses a
+> fixed coefficient in Group2.
 
 `gan.enabled: true` adds a conditional critic (`rdm/sw_lmmd/adversarial.py`) on the same pooled
 features the force compares. It has one projection head per encoder, conditioned on `τ(c)`, and

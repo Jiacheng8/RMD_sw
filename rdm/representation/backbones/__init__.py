@@ -28,6 +28,9 @@ def build_backbone(spec: EncoderSpec, device: str = "cuda"):
     if src == "flux_vae":
         from .flux_vae_backbone import FluxVAEBackbone
         return FluxVAEBackbone(device=device, target_size=spec.input_res)
+    if src == "qwen3_vl":
+        from .qwen3_vl_backbone import Qwen3VLBackbone
+        return Qwen3VLBackbone(device=device, model_id=spec.model_id, target_size=spec.input_res)
     raise ValueError(f"unknown backbone source {src!r} for encoder {spec.name!r}")
 
 

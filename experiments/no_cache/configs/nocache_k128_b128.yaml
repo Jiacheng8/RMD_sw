@@ -1,0 +1,40 @@
+# No-cache control: K128 · GAN with every window row generated fresh -- K = B = 128.
+#
+#   bash experiments/no_cache/run.sh                     # 2 x H100, 2000 steps
+#
+# Base: "K128 · GAN" (configs/sw_lmmd_train_h100_2gpu_gan.yaml) -- ungrouped, per-image GAN critic,
+# fp32 battery, lr 2.83e-6 (warm-up 100, cosine to 0.1x at `steps`), encoders dinov3_l / siglip2 /
+# aimv2_huge, COCO reference only. Changes:
+#   window.stride 32 -> 128 (= window.size): 128 fresh rows per step, all back-propagated, matched
+#     against the same 128 rows' references; no retained rows, so no cache.
+#   probe_every 0, cache.refresh_every_windows 0, cache.drift_threshold 0: nothing to probe/refresh.
+#   memory.micro_batch 4 (as the other one-command runs; memory only, gradient unchanged).
+# Each step does ~4x the fresh rollouts and back-propagation of K128 · GAN (32 rows), so compare
+# both at the same steps AND at the same GPU time (train_log.jsonl has `seconds` per step).
+extends: ../../../configs/sw_lmmd_train_h100_2gpu_gan.yaml
+exp_name: nocache-k128b128
+
+# `extends` merges top-level keys only, so whole blocks are restated.
+window:
+  size: 128                   # K
+  stride: 128                 # B = K: every row fresh
+  cyclic: true
+  order_seed: 3407            # the same permutation as K128 · GAN
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+active_global_batch: 128      # B; must equal window.stride
+
+probe_every: 0
+cache:
+  refresh_every_windows: 0
+  refresh_probe_rows: 64
+  drift_threshold: 0.0
+
+memory:
+  shard: none
+  grad_reduce: mean
+  optimizer: adamw8bit
+  param_dtype: fp32
+  battery_bf16: false         # the critic needs the store's encoder pipeline
+  micro_batch: 4
+  encoder_offload: false

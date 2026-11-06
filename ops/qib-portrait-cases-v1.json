@@ -1,0 +1,93 @@
+{
+  "dataset": "Qwen/Qwen-Image-Bench",
+  "revision": "d2493deb153b020cf169c7e3f57d15e4dd697038",
+  "source_url": "https://huggingface.co/datasets/Qwen/Qwen-Image-Bench",
+  "license": "Apache-2.0",
+  "source_receipt": {
+    "url": "https://huggingface.co/datasets/Qwen/Qwen-Image-Bench/resolve/d2493deb153b020cf169c7e3f57d15e4dd697038/qwen_image_bench_hf_v0518.jsonl",
+    "rows": 1000,
+    "source_file_sha256": "3def4dbb901bc75a13b755864e288a6e8f9a50010c1310129f57a7a84f44c005",
+    "bytes": 1041334,
+    "utc": "2026-11-04T15:56:37.689756+00:00"
+  },
+  "language": "en",
+  "selection": "Eight fixed portrait cases chosen before inference; exact official prompts, not a benchmark score",
+  "seeds": [
+    0,
+    1
+  ],
+  "cases": [
+    {
+      "ID": 5,
+      "prompt_en": "A Japanese geiko, set on a spring afternoon beneath a blooming cherry tree: she stands in a vibrant crimson furisode kimono embroidered with gold-thread tortoiseshell and wave motifs, showcasing Kyoto Yuzen dyeing craftsmanship; her obi is a rich scarlet maru obi tied in a formal \u201ctaiko musubi\u201d drum knot, its silk surface softly lustrous; she holds a vermilion-lacquered, gold-painted uchiwa fan partially covering her chest, adorned with gold-leaf cherry blossoms and crane feathers; her shimada hairstyle is meticulously coiffed with tortoiseshell kanzashi, floral hairpins, and silver butterflies, each strand of jet-black hair rendered with precision; her face is powdered white like porcelain, lips dabbed with cinnabar, eyes downcast in serene composure; a gentle breeze carries pale pink cherry petals swirling past her shoulders and fan edge, lifting strands of hair and kimono hems; the background melts into a soft-focus sakura grove, with dappled sunlight highlighting fabric texture and fold depth; rendered in cinematic soft-focus tones, every detail exquisitely refined, evoking mono no aware and Edo-period elegance",
+      "prompt_cn": "\u65e5\u672c\u827a\u4f0e\u8096\u50cf\u56fe\uff0c\u6625\u65e5\u5348\u540e\uff0c\u4e00\u4f4d\u827a\u4f0e\u7acb\u4e8e\u76db\u653e\u7684\u6a31\u82b1\u6811\u4e0b\uff0c\u8eab\u7a7f\u7eef\u7ea2\u5e95\u91d1\u7ebf\u523a\u7ee3\u632f\u8896\u548c\u670d\uff0c\u8863\u9762\u6e05\u6670\u5448\u73b0\u9f9f\u7532\u7eb9\u4e0e\u6d41\u6c34\u7eb9\u4ea4\u7ec7\u7684\u4eac\u90fd\u53cb\u7985\u67d3\u5de5\u827a\uff0c\u8170\u95f4\u7eef\u8272\u5bbd\u5e45\u4e38\u5e26\u7ed3\u6210\u201c\u592a\u9f13\u7ed3\u201d\uff0c\u5782\u5e26\u5149\u6cfd\u67d4\u6da6\uff1b\u5979\u624b\u6301\u6731\u6f06\u63cf\u91d1\u56e2\u6247\u534a\u63a9\u80f8\u524d\uff0c\u6247\u9762\u7ed8\u6709\u91d1\u7b94\u6a31\u82b1\u4e0e\u9e64\u7fbd\uff1b\u4e4c\u9ed1\u9ad8\u9afb\u9970\u4ee5\u73b3\u7441\u7c2a\u3001\u82b1\u7c2a\u4e0e\u94f6\u8776\uff0c\u53d1\u4e1d\u6839\u6839\u5206\u660e\uff1b\u9762\u90e8\u5986\u5bb9\u6d01\u767d\u5982\u74f7\uff0c\u5507\u70b9\u6731\u7802\uff0c\u773c\u795e\u4f4e\u5782\uff0c\u795e\u60c5\u9759\u8c27\u5185\u655b\uff1b\u5fae\u98ce\u8f7b\u62c2\uff0c\u6570\u7247\u7c89\u767d\u6a31\u82b1\u74e3\u81ea\u7a7a\u4e2d\u65cb\u843d\uff0c\u63a0\u8fc7\u80a9\u5934\u4e0e\u6247\u7f18\uff0c\u53d1\u4e1d\u4e0e\u8863\u8882\u5fae\u626c\uff1b\u80cc\u666f\u4e3a\u865a\u5316\u6a31\u6797\uff0c\u5149\u6591\u900f\u8fc7\u82b1\u679d\u6d12\u5728\u548c\u670d\u8936\u76b1\u4e0a\uff0c\u7a81\u51fa\u7ec7\u7269\u8d28\u611f\u4e0e\u5149\u5f71\u5c42\u6b21\uff1b\u6574\u4f53\u91c7\u7528\u67d4\u7126\u7535\u5f71\u611f\u8272\u8c03\uff0c\u7ec6\u8282\u6781\u81f4\u7cbe\u81f4\uff0c\u4f20\u9012\u7269\u54c0\u7f8e\u5b66\u4e0e\u6c5f\u6237\u98ce\u96c5",
+      "dims_en": "Alignment / Scene / Real-world Scene; Aesthetics / Anatomical Portraiture / Anatomical Fidelity; Real-world Fidelity / World Knowledge / Cultural Elements; Quality / Detail / Edge Clarity; Aesthetics / Lighting / Lighting & Atmosphere",
+      "dims_cn": "\u56fe\u6587\u4e00\u81f4\u6027-\u573a\u666f-\u771f\u5b9e\u573a\u666f; \u56fe\u50cf\u7f8e\u5b66-\u4eba\u50cf-\u4eba\u50cf; \u73b0\u5b9e\u590d\u73b0-\u4e16\u754c\u77e5\u8bc6-\u6587\u5316\u5143\u7d20; \u56fe\u50cf\u8d28\u91cf-\u7ec6\u8282\u5ea6-\u8fb9\u7f18; \u56fe\u50cf\u7f8e\u5b66-\u5149\u5f71-\u5149\u5f71",
+      "label": "Geiko / ornate clothing and face",
+      "prompt_sha256": "1d1b347fc771c6a93e1b58540a77d895a48ab6214559685da8c6440b789cecb5"
+    },
+    {
+      "ID": 8,
+      "prompt_en": "Generate a realistic portrait: An Asian woman with long, straight black hair and large eyes sits by a window reading. She has long, curled eyelashes in a baby-curl style, her eyes slightly lowered, and she smiles as she looks at the book. The soft, backlit light filtering through the sheer curtains in the early morning creates dappled patterns. The woman's skin texture is natural, with subtle but not excessive pores, and her gaze is focused. The portrait should realistically depict the relationship between her fingers and the pages, with clear details on her nails. The overall tone is gentle and low-saturation, and the composition is a medium to close-up.",
+      "prompt_cn": "\u4e00\u4f4d\u9ed1\u8272\u957f\u76f4\u53d1\u5927\u773c\u775b\u4e9a\u6d32\u5973\u6027\u5750\u5728\u7a97\u8fb9\u9605\u8bfb\uff0c\u5979\u6709\u7740\u5a74\u513f\u5f2f\u9020\u578b\u7684\u957f\u5377\u776b\u6bdb\uff0c\u5fae\u5fae\u5782\u4e0b\u53cc\u773c\uff0c\u770b\u7740\u4e66\u9762\u5e26\u5fae\u7b11\u3002\u6e05\u6668\u4fa7\u9006\u5149\u7a7f\u8fc7\u8584\u7eb1\u7a97\u5e18\u5f62\u6210\u67d4\u548c\u5149\u6591\uff1b\u5973\u751f\u9762\u90e8\u76ae\u80a4\u7eb9\u7406\u81ea\u7136\uff0c\u53ef\u89c1\u8f7b\u5fae\u6bdb\u5b54\u4f46\u4e0d\u8fc7\u5ea6\uff0c\u773c\u795e\u4e13\u6ce8\uff1b\u8981\u6c42\u624b\u6307\u4e0e\u4e66\u9875\u63a5\u89e6\u5173\u7cfb\u771f\u5b9e\uff0c\u6307\u7532\u7ec6\u8282\u6e05\u6670\uff1b\u6574\u4f53\u8272\u8c03\u6e29\u67d4\u3001\u4f4e\u9971\u548c\uff0c\u6784\u56fe\u4e3a\u4e2d\u8fd1\u666f\u3002",
+      "dims_en": "Aesthetics / Anatomical Portraiture / Anatomical Fidelity; Aesthetics / Emotional Expression / Emotional Expression; Aesthetics / Color Harmony / Color Harmony; Quality / Detail / Edge Clarity; Aesthetics / Lighting / Lighting & Atmosphere; Alignment / Actions / Contact Interaction",
+      "dims_cn": "\u56fe\u50cf\u7f8e\u5b66-\u4eba\u50cf-\u4eba\u50cf; \u56fe\u50cf\u7f8e\u5b66-\u60c5\u7eea\u8868\u8fbe-\u60c5\u7eea\u8868\u8fbe; \u56fe\u50cf\u7f8e\u5b66-\u8272\u5f69-\u8272\u5f69; \u56fe\u50cf\u8d28\u91cf-\u7ec6\u8282\u5ea6-\u8fb9\u7f18; \u56fe\u50cf\u7f8e\u5b66-\u5149\u5f71-\u5149\u5f71; \u56fe\u6587\u4e00\u81f4\u6027-\u52a8\u4f5c-\u63a5\u89e6\u4e92\u52a8",
+      "label": "Reading / fingers and pages",
+      "prompt_sha256": "532a8b23145d986ace822e11fc0ae4bc7e48c33b5222b101eac0f74dfa1d97fc"
+    },
+    {
+      "ID": 47,
+      "prompt_en": "realistic half-body close-up portrait of a European model wearing a traditional Quanzhou-style hairpin, combining silk flowers with silver ornaments. The floral elements are layered yet not overly elaborate; the makeup is restrained, and the skin's texture is natural, revealing subtle details; side-backlighting creates contour lighting around the hair, and the silver ornaments reflect light realistically without overexposure; the model has a gentle, confident smile, looking directly at the camera; the background is a light-colored wall with a slight blur. The hairpin should have a reasonable structure, with petal edges that don't melt, and the style should be consistent with a VOGUE cover magazine aesthetic\u2014a high-fashion portrait.",
+      "prompt_cn": "\u5199\u5b9e\u4eba\u50cf\u534a\u8eab\u8fd1\u666f\uff0c\u4e00\u4f4d\u6b27\u6d32\u6a21\u7279\u5934\u6234\u4e2d\u56fd\u6cc9\u5dde\u4f20\u7edf\u7c2a\u82b1\uff0c\u7ee2\u82b1\u4e0e\u94f6\u9970\u53d1\u7c2a\u5e76\u7528\uff0c\u82b1\u6750\u5c42\u6b21\u4e30\u5bcc\u4f46\u4e0d\u5806\u780c\uff1b\u5986\u5bb9\u514b\u5236\u3001\u80a4\u8d28\u81ea\u7136\u53ef\u89c1\u7ec6\u5fae\u7eb9\u7406\uff1b\u4fa7\u9006\u5149\u5f62\u6210\u53d1\u4e1d\u8f6e\u5ed3\u5149\uff0c\u94f6\u9970\u53cd\u5c04\u771f\u5b9e\u4e0d\u8fc7\u66dd\uff1b\u6a21\u7279\u8868\u60c5\u6e29\u67d4\u3001\u81ea\u4fe1\u5fae\u7b11\uff0c\u89c6\u7ebf\u76f4\u89c6\u955c\u5934\uff1b\u80cc\u666f\u4e3a\u6d45\u8272\u5899\u9762\u8f7b\u865a\u5316\u3002\u8981\u6c42\u7c2a\u82b1\u7ed3\u6784\u5408\u7406\u3001\u82b1\u74e3\u8fb9\u7f18\u4e0d\u878d\u5316\uff0c\u98ce\u683c\u7edf\u4e3aVOGUE\u5c01\u9762\u6742\u5fd7\u98ce\uff0c\u9ad8\u7ea7\u65f6\u5c1a\u5199\u771f\u3002",
+      "dims_en": "Creative Generation / Design Applications / Fashion Styling; Aesthetics / Anatomical Portraiture / Anatomical Fidelity; Aesthetics / Lighting / Lighting & Atmosphere; Real-world Fidelity / World Knowledge / Cultural Elements; Alignment / Attributes / Facial Expression; Quality / Detail / Edge Clarity; Alignment / Attributes / Material Properties",
+      "dims_cn": "\u521b\u4f5c\u63a8\u7406-\u8bbe\u8ba1\u5e94\u7528-\u65f6\u5c1a\u9020\u578b; \u56fe\u50cf\u7f8e\u5b66-\u4eba\u50cf-\u4eba\u50cf; \u56fe\u50cf\u7f8e\u5b66-\u5149\u5f71-\u5149\u5f71; \u73b0\u5b9e\u590d\u73b0-\u4e16\u754c\u77e5\u8bc6-\u6587\u5316\u5143\u7d20; \u56fe\u6587\u4e00\u81f4\u6027-\u5c5e\u6027-\u8868\u60c5; \u56fe\u50cf\u8d28\u91cf-\u7ec6\u8282\u5ea6-\u8fb9\u7f18; \u56fe\u6587\u4e00\u81f4\u6027-\u5c5e\u6027-\u6750\u6599",
+      "label": "Fashion / hair ornaments and skin",
+      "prompt_sha256": "24b93c920702c45cf50144026f5286daae897c0bc305550c11ae28c669995315"
+    },
+    {
+      "ID": 81,
+      "prompt_en": "A scene of argument at the American family kitchen table, featuring diverse family members (avoiding traditional, rigid roles), with complex yet restrained expressions. Requirements: warm lighting, low contrast; clear composition; high-quality portraits; no discriminatory props or text.",
+      "prompt_cn": "\u7f8e\u56fd\u5bb6\u5ead\u53a8\u623f\u9910\u684c\u4e89\u8bba\u573a\u9762\uff0c\u5bb6\u5ead\u6210\u5458\u591a\u5143\u7ec4\u5408\uff08\u907f\u514d\u4f20\u7edf\u523b\u677f\u5206\u5de5\uff09\uff0c\u8868\u60c5\u590d\u6742\u4f46\u514b\u5236\u3002\u8981\u6c42\uff1a\u6696\u5149\u3001\u4f4e\u5bf9\u6bd4\uff1b\u6784\u56fe\u5c42\u6b21\u6e05\u6670\uff1b\u4eba\u50cf\u8d28\u91cf\u9ad8\uff1b\u65e0\u6b67\u89c6\u6027\u9053\u5177\u6216\u6587\u672c\u3002",
+      "dims_en": "Aesthetics / Anatomical Portraiture / Anatomical Fidelity; Aesthetics / Composition / Composition; Real-world Fidelity / Fairness / Cultural Fairness; Alignment / Attributes / Facial Expression; Quality / Resolution / Resolution; Aesthetics / Lighting / Lighting & Atmosphere",
+      "dims_cn": "\u56fe\u50cf\u7f8e\u5b66-\u4eba\u50cf-\u4eba\u50cf; \u56fe\u50cf\u7f8e\u5b66-\u6784\u56fe-\u6784\u56fe; \u73b0\u5b9e\u590d\u73b0-\u516c\u5e73\u6027-\u6587\u5316\u516c\u5e73; \u56fe\u6587\u4e00\u81f4\u6027-\u5c5e\u6027-\u8868\u60c5; \u56fe\u50cf\u8d28\u91cf-\u6e05\u6670\u5ea6/\u5206\u8fa8\u7387-\u6e05\u6670\u5ea6/\u5206\u8fa8\u7387; \u56fe\u50cf\u7f8e\u5b66-\u5149\u5f71-\u5149\u5f71",
+      "label": "Family / multiple faces and expressions",
+      "prompt_sha256": "0790c746df0587ad046de10daa6cc3eaea160cb9ff71a9bccf19e565570b311c"
+    },
+    {
+      "ID": 172,
+      "prompt_en": "Old neighborhood clinic waiting area: worn plastic chairs with fuzzing, wall stains and patch marks. An elderly person holds a medical file with slight trembling, worried gaze. Wall signage \u201c\u53d6\u53f7\u5904 Ticket\u201d and \u201c\u8bf7\u4fdd\u6301\u5b89\u9759 Please Keep Quiet\u201d in bilingual hierarchy with aligned arrows. Require realistic wrinkles and skin sag, clear paper fibers, controlled noise, undistorted legible text, and a subdued (non-horror) atmosphere.",
+      "prompt_cn": "\u8001\u65e7\u793e\u533a\u8bca\u6240\u5019\u8bca\u533a\uff1a\u5851\u6599\u6905\u78e8\u635f\u8d77\u6bdb\uff0c\u5899\u9762\u6709\u8f7b\u5fae\u6c61\u6e0d\u4e0e\u4fee\u8865\u75d5\uff1b\u4e00\u4f4d\u8001\u4eba\u53cc\u624b\u62b1\u7740\u75c5\u5386\u672c\u5fae\u5fae\u53d1\u6296\uff0c\u773c\u795e\u62c5\u5fe7\u3002\u5899\u4e0a\u4fe1\u606f\u724c\u201c\u53d6\u53f7\u5904 Ticket\u201d\u4e0e\u201c\u8bf7\u4fdd\u6301\u5b89\u9759 Please Keep Quiet\u201d\u53cc\u8bed\u5206\u5c42\uff0c\u7bad\u5934\u5bf9\u9f50\u3002\u8981\u6c42\uff1a\u4eba\u50cf\u76b1\u7eb9\u4e0e\u76ae\u80a4\u677e\u5f1b\u771f\u5b9e\u3001\u7eb8\u5f20\u7ea4\u7ef4\u6e05\u6670\u3001\u566a\u70b9\u63a7\u5236\u3001\u6587\u5b57\u65e0\u5f62\u53d8\u3001\u6c1b\u56f4\u538b\u6291\u4f46\u4e0d\u6050\u6016\u3002",
+      "dims_en": "Aesthetics / Anatomical Portraiture / Anatomical Fidelity; Alignment / Attributes / Material Properties; Creative Generation / Text Rendering / Text Accuracy; Quality / Detail / Noise; Aesthetics / Emotional Expression / Emotional Expression",
+      "dims_cn": "\u56fe\u50cf\u7f8e\u5b66-\u4eba\u50cf-\u4eba\u50cf; \u56fe\u6587\u4e00\u81f4\u6027-\u5c5e\u6027-\u6750\u6599; \u521b\u4f5c\u63a8\u7406-\u6587\u672c\u6e32\u67d3-\u6587\u5b57\u51c6\u786e\u6027; \u56fe\u50cf\u8d28\u91cf-\u7ec6\u8282\u5ea6-\u566a\u70b9; \u56fe\u50cf\u7f8e\u5b66-\u60c5\u7eea\u8868\u8fbe-\u60c5\u7eea\u8868\u8fbe",
+      "label": "Clinic / wrinkles and bilingual text",
+      "prompt_sha256": "cdd03848133951d8d6019cf9fde1b3d6daa4c9488d8dfdaeefa7c29e0fb75138"
+    },
+    {
+      "ID": 312,
+      "prompt_en": "An elderly person around 70 years old sitting on a park bench, body slightly leaning forward with hands resting on the knees. Deep and shallow wrinkles across forehead, eye corners and mouth, loose skin retaining natural sheen, warm skin tone with age spots. Sparse gray-white hair close to the scalp, thin eyebrows, slightly drooping eyelids, peaceful expression",
+      "prompt_cn": "\u4e00\u4f4d\u7ea670\u5c81\u7684\u8001\u4eba\u5750\u5728\u516c\u56ed\u957f\u6905\u4e0a\uff0c\u8eab\u4f53\u5fae\u5fae\u524d\u503e\uff0c\u53cc\u624b\u653e\u5728\u819d\u76d6\u4e0a\u3002\u989d\u5934\u3001\u773c\u89d2\u548c\u5634\u89d2\u5e03\u6ee1\u6df1\u6d45\u4e0d\u4e00\u7684\u76b1\u7eb9\uff0c\u76ae\u80a4\u677e\u5f1b\u4f46\u4ecd\u6709\u81ea\u7136\u53cd\u5149\uff0c\u80a4\u8272\u504f\u6696\u5e76\u5e26\u6709\u8001\u5e74\u6591\uff0c\u7070\u767d\u5934\u53d1\u7a00\u758f\u8d34\u5408\u5934\u76ae\uff0c\u7709\u6bdb\u7a00\u5c11\uff0c\u773c\u7751\u7565\u5fae\u4e0b\u5782\uff0c\u8868\u60c5\u5b89\u8be6",
+      "dims_en": "Aesthetics / Anatomical Portraiture / Anatomical Fidelity; Quality / Realism / Physical Logic; Aesthetics / Emotional Expression / Emotional Expression; Quality / Realism / Material Texture; Alignment / Attributes / Facial Expression",
+      "dims_cn": "\u56fe\u50cf\u7f8e\u5b66-\u4eba\u50cf-\u4eba\u50cf; \u56fe\u50cf\u8d28\u91cf-\u771f\u5b9e\u611f/\u53ef\u4fe1\u5ea6-\u7269\u7406\u903b\u8f91; \u56fe\u50cf\u7f8e\u5b66-\u60c5\u7eea\u8868\u8fbe-\u60c5\u7eea\u8868\u8fbe; \u56fe\u50cf\u8d28\u91cf-\u771f\u5b9e\u611f/\u53ef\u4fe1\u5ea6-\u6750\u8d28; \u56fe\u6587\u4e00\u81f4\u6027-\u5c5e\u6027-\u8868\u60c5",
+      "label": "Elder / close portrait and skin",
+      "prompt_sha256": "ebeea4c9f85aa3a325ec18478dd263aef81abd795cf3b004d98859dd0d19d034"
+    },
+    {
+      "ID": 393,
+      "prompt_en": "Two people shake hands in greeting; palms fully adhere, fingers naturally curve around each other\u2019s backs, with no gaps or incorrect overlaps in skin contact.",
+      "prompt_cn": "\u4e24\u4eba\u63e1\u624b\u81f4\u610f\uff0c\u624b\u638c\u5b8c\u5168\u8d34\u5408\uff0c\u624b\u6307\u81ea\u7136\u5f2f\u66f2\u5305\u88f9\u5bf9\u65b9\u624b\u80cc\uff0c\u76ae\u80a4\u63a5\u89e6\u533a\u57df\u65e0\u95f4\u9699\u6216\u91cd\u53e0\u9519\u8bef\u3002",
+      "dims_en": "Alignment / Actions / Contact Interaction; Aesthetics / Anatomical Portraiture / Anatomical Fidelity; Quality / Realism / Physical Logic; Aesthetics / Emotional Expression / Emotional Expression",
+      "dims_cn": "\u56fe\u6587\u4e00\u81f4\u6027-\u52a8\u4f5c-\u63a5\u89e6\u4e92\u52a8; \u56fe\u50cf\u7f8e\u5b66-\u4eba\u50cf-\u4eba\u50cf; \u56fe\u50cf\u8d28\u91cf-\u771f\u5b9e\u611f/\u53ef\u4fe1\u5ea6-\u7269\u7406\u903b\u8f91; \u56fe\u50cf\u7f8e\u5b66-\u60c5\u7eea\u8868\u8fbe-\u60c5\u7eea\u8868\u8fbe",
+      "label": "Handshake / two people and contact",
+      "prompt_sha256": "97e5a99f7c34c9ccb4ba09717ce86e8669e7849f2c7192cb69b1793b699ba248"
+    },
+    {
+      "ID": 849,
+      "prompt_en": "A violinist holds the instrument between chin and shoulder, left hand presses strings, right hand draws bow\u2014all contact points stable, no slipping.",
+      "prompt_cn": "\u5c0f\u63d0\u7434\u624b\u7528\u4e0b\u5df4\u548c\u80a9\u8180\u5939\u4f4f\u7434\u8eab\uff0c\u5de6\u624b\u6309\u5f26\uff0c\u53f3\u624b\u6301\u5f13\u62c9\u594f\uff0c\u6240\u6709\u63a5\u89e6\u70b9\u7a33\u5b9a\u65e0\u6ed1\u52a8\u3002",
+      "dims_en": "Quality / Realism / Physical Logic; Aesthetics / Anatomical Portraiture / Anatomical Fidelity; Alignment / Actions / Contact Interaction; Real-world Fidelity / World Knowledge / Objects",
+      "dims_cn": "\u56fe\u50cf\u8d28\u91cf-\u771f\u5b9e\u611f/\u53ef\u4fe1\u5ea6-\u7269\u7406\u903b\u8f91; \u56fe\u50cf\u7f8e\u5b66-\u4eba\u50cf-\u4eba\u50cf; \u56fe\u6587\u4e00\u81f4\u6027-\u52a8\u4f5c-\u63a5\u89e6\u4e92\u52a8; \u73b0\u5b9e\u590d\u73b0-\u4e16\u754c\u77e5\u8bc6-\u7269\u54c1",
+      "label": "Violinist / both hands and instrument",
+      "prompt_sha256": "880744576b06b68676c423379dd9839cb1563f654b02bc75c633fbf593ef37c5"
+    }
+  ]
+}

@@ -136,6 +136,8 @@ class LRSchedule:
     min_lr_ratio: float = 0.0             # decay floor as a fraction of lr (cosine / linear)
     total_steps: int | None = None        # decay horizon; None = the run's `steps`
 
+    end_at_last_step: bool = False       # opt-in exact floor on the last (1-based) update
+
     def validate(self) -> None:
         if self.name not in ("constant", "cosine", "linear"):
             raise ValueError(f"lr_schedule.name must be constant / cosine / linear, "
@@ -160,7 +162,7 @@ class LRSchedule:
             raise ValueError("a decaying lr schedule needs total_steps (the launcher fills it "
                              "from `steps`)")
         progress = min(1.0, (step - self.warmup_steps) / max(1, self.total_steps -
-                                                              self.warmup_steps))
+                                                              self.warmup_steps - int(self.end_at_last_step)))
         shape = 0.5 * (1.0 + math.cos(math.pi * progress)) if self.name == "cosine" else \
             1.0 - progress
         return self.min_lr_ratio + (1.0 - self.min_lr_ratio) * shape
@@ -193,6 +195,7 @@ class GANConfig:
     min_norm_ratio: float = 1e-3          # adaptive: floor on |g_adv| / |g_mmd| (caps lambda)
     loss: str = "hinge"                   # hinge | ns (non-saturating logistic)
     lr: float = 2e-4
+    grad_clip: float = 0.0                # spatial D: clip accumulated rank-mean gradient; 0 disables
     betas: tuple = (0.0, 0.99)
     hidden: int = 1024
     depth: int = 2                        # hidden layers per head
@@ -221,6 +224,8 @@ class GANConfig:
                 self.block_width % self.block_heads:
             raise ValueError("gan.block_width, block_layers and block_heads must be positive, "
                              "and block_heads must divide block_width")
+        if not math.isfinite(self.grad_clip) or self.grad_clip < 0:
+            raise ValueError("gan.grad_clip must be finite and non-negative")
         if self.weight < 0 or self.lr < 0 or self.r1_gamma < 0:
             raise ValueError("gan.weight, gan.lr and gan.r1_gamma must be non-negative")
         if self.hidden <= 0 or self.depth <= 0 or self.stats_rows <= 1:

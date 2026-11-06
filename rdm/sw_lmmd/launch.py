@@ -392,6 +392,14 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
     jsonl = open(os.path.join(out_dir, "train_log.jsonl"), "a") if is_main_process() else None
 
     def write(state, path):
+        if getattr(cfg, 'checkpoint_archive_dir', None):
+            from .checkpoint_archive import wait_for_space
+            # The asynchronous archive must free completed student staging files before
+            # the next atomic resume write can consume another full snapshot's space.
+            required = (os.path.getsize(path) if os.path.exists(path) else
+                        sum(v.numel()*v.element_size() for v in state['model'].values())) + 1024**3
+            wait_for_space(out_dir, required, os.path.join(
+                getattr(cfg, 'checkpoint_archive_control'), 'checkpoint-archive-worker.exit'))
         tmp = path + ".partial"
         torch.save(state, tmp)
         os.replace(tmp, path)
@@ -460,15 +468,18 @@ def train(cfg, device: str = "cuda", trainer: SWLMMDTrainer | None = None) -> SW
                             logs["cache_max_age"], logs["seconds"], gan)
             jsonl.write(json.dumps(logs) + "\n")
             jsonl.flush()
-        if trainer.step_idx % save_freq == 0:
-            checkpoint()
+        # Replace the rolling resume before adding a historical student file.
+        # This releases the old rolling inode first and avoids needing space
+        # for the old resume + new resume temporary + new student at once.
         if save_resume and trainer.step_idx % resume_every == 0:
             save_resume_state()
+        if trainer.step_idx % save_freq == 0:
+            checkpoint()
 
-    if trainer.step_idx % save_freq:              # the final step, unless it was just saved
-        checkpoint()
     if save_resume and trainer.step_idx % resume_every:
         save_resume_state()
+    if trainer.step_idx % save_freq:              # the final step, unless it was just saved
+        checkpoint()
     if is_main_process():
         jsonl.close()
         logger.info("[sw_lmmd] done: %d steps in %.2f h", trainer.step_idx,

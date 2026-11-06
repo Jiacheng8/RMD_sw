@@ -1,0 +1,121 @@
+# Group2: fresh pretrained0, MMD + fixed-weight GAN; DINOv3 + Qwen-VL.
+method: sw_lmmd
+mode: zimage
+exp_name: zimage-2step-1024-dino-qwenvl-k512-b64-fixed-from0
+img_size: 1024
+grad_checkpointing: true
+
+zimage:
+  attention_backend: _flash_3_varlen_hub
+  checkpoint_group_size: 2
+  repo: Tongyi-MAI/Z-Image-Turbo   # or a local snapshot directory
+  context: auto                    # auto: the store's precomputed Qwen3 contexts (no Qwen3 on the
+                                   # GPU) when it has them, else encode online | store | online
+  feature_pool: auto               # auto: down to the size the references were encoded at,
+                                   # from encoder_features/*.done.json (process/: 1024 -> 512 = 2x)
+  feature_quantize: true           # reproduce the references' PNG + PIL BOX reduce exactly in the
+                                   # forward (gradient = the average pool), so the critic cannot
+                                   # tell the two sides apart by preprocessing
+  max_sequence_length: 512         # online encoding only: the pipeline's padding / truncation
+  text_cache: 512                  # online encoding only: contexts kept on GPU (LRU)
+  vae_checkpointing: true
+
+student:
+  num_steps: 2
+  sigmas: null                     # null = the Turbo schedule for num_steps: [1.0, 0.75]
+  renoise: true                    # every step's output is a full image (DMD2-style)
+  detach_between_steps: true
+  step_weights: [1.0, 1.0]         # w_1, w_2
+
+# built by /data/ironman/jiacheng/RDM/z-image/process (launch.py all). The contexts and renders sit
+# in the root above reference_store/: move or copy the WHOLE root, then REFERENCE_ROOT=<root>/reference_store
+reference_root: /data/rdm-workspace/rdm-sets/zimage/zimage-ref-v1/reference_store_dino_qwenvl
+qwen_text_repo: jiachengcui888/zimage-ref-qwen-text   # retain the original global Qwen text view
+output_dir: /data/rdm-workspace/rdm-sets/zimage/work_dirs
+encoders: [dinov3_l, qwen3vl_4b]
+joint: true
+
+window:
+  size: 512                        # K
+  stride: 64                       # B
+  cyclic: true
+  order_seed: 3407
+  random_start_each_epoch: true
+  reverse_probability: 0.5
+active_global_batch: 64            # B; must equal window.stride
+
+loss:
+  estimator: biased_mmd
+  kernel: rbf
+  kernel_block_size: 256
+
+cache:
+  refresh_every_windows: 20
+  refresh_probe_rows: 64
+  drift_threshold: 0.05
+probe_every: 10
+
+gan:
+  enabled: true
+  encoders: null
+  weight: 5.0e-5                   # fixed loss coefficient; no gradient-ratio balancing
+  adaptive: false
+  loss: ns                        # non-saturating softplus for both D and G
+  lr: 1.0e-5                     # latest user override; generator/MMD unchanged
+  grad_clip: 4.0                  # after all D chunks and rank averaging
+  betas: [0.0, 0.99]
+  hidden: 1024
+  depth: 2
+  spectral_norm: true
+  r1_gamma: 0.0
+  g_start_step: 50
+  conditional: true
+  stats_rows: 8192
+  seed: 0                          # step k's critic is seeded seed + k - 1
+
+memory:
+  shard: fsdp
+  grad_reduce: none                # FSDP's reduce-scatter already averages
+  optimizer: adamw8bit
+  param_dtype: fp32                # master weights
+  compute_dtype: bf16              # FSDP all-gathers in bf16
+  battery_bf16: false              # the critic needs the store's encoder pipeline
+  micro_batch: 2                   # candidate: two rows/rank; 2 GPUs => grad_accum=16; global batch64
+  encoder_offload: false
+
+lr: 2.83e-5                        # latest user: generator base LR x10, original schedule retained
+lr_schedule:
+  name: cosine
+  warmup_steps: 100
+  min_lr_ratio: 0.5
+  total_steps: 500
+  end_at_last_step: true
+grad_clip: 4.0
+steps: 500
+seed: 0
+
+monitor_every: 1
+print_freq: 1
+save_freq: 50                     # weights-only fp32 checkpoints: 24.6 GB each
+save_cache: false
+save_optimizer: false
+save_resume: true                  # weights + cache + both critics (not the FSDP-sharded optimizer)
+resume_every: 50
+
+spatial_gan:
+  enabled: true
+  global_gan_encoders: []          # GAN only DINOv3 + Qwen-VL; no AIM/SigLIP in MMD
+  qwen_snapshot: /data/rdm-workspace/rdm-sets/models/qwen3vl-4b-patchgan/ebb281ec70b05090aa6165b016eac8ec08e71b17
+  reference_images: /data/rdm-workspace/rdm-sets/zimage/zimage-ref-v1/reference_images_patchgan_object_v1
+  real_cache_rows: 128
+  heads: 8
+
+adaptive_d_lr:
+  enabled: false
+
+discriminator_lr_schedule:
+  name: cosine
+  warmup_steps: 0
+  min_lr_ratio: 0.5
+  total_steps: 500
+  end_at_last_step: true

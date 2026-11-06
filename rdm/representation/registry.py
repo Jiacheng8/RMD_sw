@@ -40,7 +40,12 @@ PANEL: list[EncoderSpec] = [
     EncoderSpec("flux_vae",       "flux_vae",  "",                                          256, P.PATCH_MEAN, 1024, S.HELD_OUT),
 ]
 
-_BY_NAME = {s.name: s for s in PANEL}
+# Opt-in replacements do not change the published fourteen-encoder panel or its defaults.
+OPTIONAL_SPECS = [
+    EncoderSpec("qwen3vl_4b", "qwen3_vl", "Qwen/Qwen3-VL-4B-Instruct", 256, P.AVG, 2560, S.TRAIN),
+]
+
+_BY_NAME = {s.name: s for s in [*PANEL, *OPTIONAL_SPECS]}
 
 
 def all_specs() -> list[EncoderSpec]:

@@ -362,15 +362,18 @@ class AdversarialCritic:
         with torch.no_grad():
             accs = [((lg[:n_real] > 0).to(loss.dtype).mean() +
                      (lg[n_real:] < 0).to(loss.dtype).mean()) / 2 for lg in logits.values()]
+            head_losses = [critic_loss(lg[:n_real], lg[n_real:], cfg.loss) for lg in logits.values()]
             vec = torch.stack([loss.detach(), r1.detach(),
                                torch.stack([lg[:n_real].mean() for lg in logits.values()]).mean(),
                                torch.stack([lg[n_real:].mean() for lg in logits.values()]).mean(),
-                               *accs]).double()
+                               *accs, *head_losses]).double()
         all_reduce_mean_(vec)                            # one collective for every logged value
         v = vec.tolist()
+        head_accs, head_ds = v[4:4 + len(accs)], v[4 + len(accs):]
         out = {"gan/d_loss": v[0], "gan/d_real": v[2], "gan/d_fake": v[3],
-               "gan/d_acc": float(np.mean(v[4:])), "gan/d_skipped": not finite}
-        out.update({f"gan/{n}/d_acc": a for n, a in zip(self.names, v[4:])})
+               "gan/d_acc": float(np.mean(head_accs)), "gan/d_skipped": not finite}
+        out.update({f"gan/{n}/d_acc": a for n, a in zip(self.names, head_accs)})
+        out.update({f"gan/{n}/d_loss": d for n, d in zip(self.names, head_ds)})
         if cfg.r1_gamma > 0:
             out["gan/r1"] = v[1]
         return out
@@ -411,6 +414,8 @@ class AdversarialCritic:
         loss = sum(adversarial_loss(lg, self.cfg.loss) for lg in logits.values()) / len(self.names)
         mean_logit = torch.stack([lg.detach().mean() for lg in logits.values()]).mean()
         logs = {"gan/g_loss": float(loss.detach()), "gan/g_fake": float(mean_logit)}
+        logs.update({f"gan/{n}/g_loss": float(adversarial_loss(lg, self.cfg.loss).detach())
+                     for n, lg in logits.items()})
         return (loss * scale if scale != 1.0 else loss), logs
 
     def balance(self, mmd_loss: torch.Tensor, adv_loss: torch.Tensor, leaves: dict,
