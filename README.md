@@ -74,21 +74,31 @@ The two experiment names end in `k512-b64-mmd-only-from0` and
 #### Run the pair on any other machine (e.g. 4× A100 80GB)
 
 `ops/h20-run-k512-b64-fixed.sh` only works on that H20 (fixed paths, GPUs 6/7, pre-built data).
-On a fresh Linux machine with conda, ≥2 × 80 GB GPUs and **~900 GB** free disk, one script
-rebuilds every input from public Hugging Face repos and trains both groups:
+On a fresh Linux machine with conda, **4 × 80 GB GPUs** (reference: 4 × A100 80GB) and
+**~650 GB** free disk, one script rebuilds every input from public Hugging Face repos, trains
+both groups and evaluates them:
 
 ```bash
-git clone -b zimage-exp https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
+git clone --branch zimage-exp --single-branch https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM   # this branch only
 tmux new -s k512                                   # runs for many hours
 ROOT=/data/<you>/rdm-sets
 bash z-image/scripts/k512_two_groups.sh --root $ROOT --dry-run   # 1. print the plan; changes nothing
 bash z-image/scripts/k512_two_groups.sh --root $ROOT --gate      # 2. prepare everything + 3 updates per group
-bash z-image/scripts/k512_two_groups.sh --root $ROOT             # 3. Group1 (MMD only), then Group2 (MMD + GAN)
+bash z-image/scripts/k512_two_groups.sh --root $ROOT             # 3. Group1, Group2, then Qwen-Image-Bench
 ```
 
-Other options: `mmd-only` / `mmd-gan` to train one group, `<group> --resume` to continue a
-stopped group, `--eval` to run Qwen-Image-Bench on both step-500 checkpoints, `--no-wandb`
-to run without a `wandb login`. `--help` lists every option.
+Other options:
+
+- `mmd-only` / `mmd-gan`: train one group.
+- `<group> --resume`: continue a stopped group.
+- `--eval-only`: only evaluate, on finished runs.
+- `--no-eval` / `--no-baselines`: skip the evaluation, or skip only the teacher baselines.
+- `--gpus N`: use a GPU count other than 4.
+- `--no-wandb`: run without a `wandb login`.
+
+`--help` lists every option.
+
+AI agents: follow [README_AGENT.md](README_AGENT.md).
 
 | stage | what | source | size / time |
 |---|---|---|---|
@@ -99,14 +109,19 @@ to run without a `wandb login`. `--help` lists every option.
 | 5 qwen text | Qwen3-4B text features → `reference_store_qwen` | `jiachengcui888/zimage-ref-qwen-text` | 1.3 GB |
 | 6 images | 87 teacher-render tars, kept (the GAN reads real PNGs from them) | `jiachengcui888/zimage-turbo-reference` | 173 GB |
 | 7 qwen-vl | Qwen3-VL image features of all 125,808 renders → `reference_store_dino_qwenvl` | computed locally | 0.6 GB |
-| 8 train | Group1 then Group2, fresh from pretrained, separate run dirs | `z-image/scripts/train.sh` | ~300 GB per group |
-| 9 eval | `--eval` only: Qwen-Image-Bench on step 500 | `z-image/eval_qib` | +65 GB judge |
+| 8 train | Group1 then Group2, 200 updates each (`--steps N` to change), fresh from pretrained, separate run dirs | `z-image/scripts/train.sh` | ~155 GB per group |
+| 9 eval | Qwen-Image-Bench on the last step (200) of each group, plus the teacher at 9 and 2 steps. The judge is installed before training. | `z-image/eval_qib` | 65 GB judge |
 
 Every finished stage is detected and skipped, so re-running the same command resumes. Results go
-to `$ROOT/zimage/work_dirs/<exp_name>/` (`train_log.jsonl`, `step_0000050.pth` … `step_0000500.pth`,
+to `$ROOT/zimage/work_dirs/<exp_name>/` (`train_log.jsonl`, `step_0000050.pth` … `step_0000200.pth`,
 `resume.pth`); console logs go to `$ROOT/zimage/logs/`.
 
 What differs from the H20 run, and how the script handles it:
+
+- **Length.** 200 updates by default instead of the YAMLs' 500. The script overrides `steps` and
+  both cosine schedules' `total_steps`, so the generator LR still ends at half its peak and the
+  discriminator LR at `5e-6`, now on update 200. The 100-update warmup and the GAN-G start at
+  update 51 are unchanged. Pass `--steps 500` for the original length.
 
 - **Attention.** The configs use FlashAttention 3, which only runs on Hopper (H100/H20). On other
   GPUs (A100 included) the script uses PyTorch SDPA (`--attention native`) instead. It computes the
@@ -116,7 +131,8 @@ What differs from the H20 run, and how the script handles it:
   8 → 16), so the objective is unchanged. The gate's 3 updates cover every memory peak of the real
   run: the drift probe and, for Group2, the GAN generator term (forced on from update 1). It prints
   each GPU's peak memory and `GATE PASS <group>`.
-- **GPU count.** Any count that divides 64 / micro-batch works; world-size invariance is tested.
+- **GPU count.** The default is 4 and the script refuses to start with fewer. `--gpus N` takes any
+  count that divides 64 / micro-batch; world-size invariance is tested.
 - **No H20 controller.** The script runs no CPU test gate, waits for no lock, and makes no
   object-store archive. Checkpoints stay in the run directory. It refuses to start if a selected
   GPU is busy or a run directory already holds a run.

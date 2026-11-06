@@ -2,7 +2,7 @@
 # The current two-group protocol (README "Current H20 protocol") on ANY machine, in one command:
 #   Group1  MMD only    z-image/configs/zimage_2step_1024_dino_qwenvl_k512_b64_mmd_only_from0.yaml
 #   Group2  MMD + GAN   z-image/configs/zimage_2step_1024_dino_qwenvl_k512_b64_fixed_from0.yaml
-# Both start from the original pretrained Z-Image-Turbo, 500 updates, K=512, B=64, MMD encoders
+# Both start from the original pretrained Z-Image-Turbo, 200 updates by default, K=512, B=64, MMD encoders
 # DINOv3 + Qwen3-VL-4B. Everything they need is rebuilt from public Hugging Face repos.
 #
 #   git clone -b zimage-exp https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
@@ -25,13 +25,17 @@
 #   7 qwen-vl    ops/h20-build-dino-qwenvl-reference.py Qwen3-VL-4B image features of all 125,808 renders on
 #                                                        every visible GPU -> reference_store_dino_qwenvl
 #   8 train      z-image/scripts/train.sh                Group1 then Group2, fresh from pretrained, separate dirs
-#   9 eval       z-image/eval_qib/run_eval.sh            Qwen-Image-Bench on step 500 of each group, plus the teacher
+#   9 eval       z-image/eval_qib/run_eval.sh            Qwen-Image-Bench on the last step of each group, plus the teacher
 #                                                        Z-Image-Turbo at 9 and 2 steps (once per root); judge ~65 GB
 #
 # Options
 #   [all|mmd-only|mmd-gan]  which group(s) to train (default all = mmd-only, then mmd-gan)
-#   --root DIR         data root (required). Budget ~950 GB: weights 41, tars 162, contexts 70,
-#                      per group 10 checkpoints x 24.6 + resume.pth ~26 (x2 while replaced), judge 65
+#   --root DIR         data root (required). Budget at 200 steps ~650 GB: weights 41, tars 162, contexts 70,
+#                      per group 4 checkpoints x 24.6 + resume.pth ~26 (x2 while replaced), judge 65
+#   --steps N          updates per group (default 200; a multiple of 50, the checkpoint interval). The
+#                      generator and discriminator cosine schedules are stretched to end at N
+#                      (lr_schedule / discriminator_lr_schedule.total_steps = N); warmup (100) and the GAN-G
+#                      start (51) are unchanged. The YAMLs say 500, the original H20 protocol.
 #   --gpus N           training GPUs (default 4: the reference machine is 4 x A100 80GB; must divide
 #                      64 / micro-batch). Stages 4, 7 and 9 use every visible card.
 #   --micro-batch N    rows per GPU per forward (default 2, as on H20). If --gate runs out of memory, use 1:
@@ -60,7 +64,7 @@ if [[ -z "${HF_TOKEN:-}" && -s "$REPO/.hf_token" ]]; then
   HF_TOKEN="$(tr -d '[:space:]' < "$REPO/.hf_token")"; export HF_TOKEN
 fi
 
-ROOT=""; GROUP="all"; GPUS=4; MICRO=2; ATTN=""; ENV_NAME="rdm"; REF_BUDGET=20
+ROOT=""; GROUP="all"; GPUS=4; STEPS=200; MICRO=2; ATTN=""; ENV_NAME="rdm"; REF_BUDGET=20
 GATE=0; RESUME=0; EVAL=1; EVAL_ONLY=0; BASELINES=1; DRY=0; ALLOW_LOW_DISK=0; DO_ENV=1; DO_DOWNLOAD=1; DO_PREPARE=1
 QWEN3VL_REPO="Qwen/Qwen3-VL-4B-Instruct"; QWEN3VL_REV="ebb281ec70b05090aa6165b016eac8ec08e71b17"
 REF_HF="jiachengcui888/zimage-ref-v1"; REF_NAME="zimage-ref-v1"; QWEN_TEXT_HF="jiachengcui888/zimage-ref-qwen-text"
@@ -69,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     all|mmd-only|mmd-gan) GROUP="$1"; shift ;;
     --root)           ROOT="$2"; shift 2 ;;
     --gpus)           GPUS="$2"; shift 2 ;;
+    --steps)          STEPS="$2"; shift 2 ;;
     --micro-batch)    MICRO="$2"; shift 2 ;;
     --attention)      ATTN="$2"; shift 2 ;;
     --env)            ENV_NAME="$2"; shift 2 ;;
@@ -96,6 +101,8 @@ done
 [[ $EVAL_ONLY -eq 1 ]] && { DO_ENV=0; DO_DOWNLOAD=0; DO_PREPARE=0; }
 [[ $EVAL_ONLY -eq 1 && $GATE -eq 1 ]] && { echo "--eval-only and --gate are exclusive" >&2; exit 2; }
 [[ $GATE -eq 1 ]] && EVAL=0
+[[ "$STEPS" =~ ^[0-9]+$ ]] && (( STEPS >= 50 && STEPS % 50 == 0 )) || { echo "--steps must be a positive multiple of 50 (the checkpoint interval)" >&2; exit 2; }
+LAST="$(printf "step_%07d.pth" "$STEPS")"
 
 ROOT="$(realpath -m "$ROOT")"
 ZROOT="$ROOT/zimage"; PACK="$ZROOT/$REF_NAME"
@@ -131,8 +138,8 @@ source "$ZDIR/scripts/_wandb.sh"
 say "preflight"
 info "repo        $REPO ($(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout'))"
 info "root        $ROOT"
-info "groups      ${GROUPS_RUN[*]}$([[ $GATE -eq 1 ]] && echo ' (gate: 3 updates each)')$([[ $RESUME -eq 1 ]] && echo ' (resume)')"
-info "eval        $( (( EVAL )) && echo "Qwen-Image-Bench on step 500$( (( BASELINES )) && echo ' + teacher 9/2 steps')" || echo off)"
+info "groups      ${GROUPS_RUN[*]}$([[ $GATE -eq 1 ]] && echo ' (gate: 3 updates each)' || echo " ($STEPS updates each)")$([[ $RESUME -eq 1 ]] && echo ' (resume)')"
+info "eval        $( (( EVAL )) && echo "Qwen-Image-Bench on step $STEPS$( (( BASELINES )) && echo ' + teacher 9/2 steps')" || echo off)"
 command -v conda >/dev/null 2>&1 || die "conda not found on PATH"
 command -v nvidia-smi >/dev/null 2>&1 || [[ $DRY -eq 1 ]] || die "nvidia-smi not found: no GPUs"
 wandb_require "$DRY"
@@ -160,9 +167,10 @@ info "attention   $([[ $ATTN == config ]] && echo "the configs' FA3 (_flash_3_va
 
 d="$ROOT"; while [[ ! -d "$d" ]]; do d="$(dirname "$d")"; done
 FREE_GB=$(df -BG --output=avail "$d" | tail -1 | tr -dc '0-9')
-NEED_GB=$(( 41 + 162 + 72 + ${#GROUPS_RUN[@]} * 300 + EVAL * 65 ))
+PER_GROUP=$(( STEPS / 50 * 25 + 55 ))
+NEED_GB=$(( 41 + 162 + 72 + ${#GROUPS_RUN[@]} * PER_GROUP + EVAL * 65 ))
 [[ $GATE -eq 1 ]] && NEED_GB=$(( 41 + 162 + 72 + 10 ))
-[[ $RESUME -eq 1 ]] && NEED_GB=300
+[[ $RESUME -eq 1 ]] && NEED_GB=$(( PER_GROUP + EVAL * 65 ))
 [[ $EVAL_ONLY -eq 1 ]] && NEED_GB=$(( 65 + 5 ))
 info "disk        $FREE_GB GB free on $(df --output=target "$d" | tail -1); this run needs up to ~$NEED_GB GB more (already-present parts excluded only approximately)"
 if (( FREE_GB < NEED_GB )); then
@@ -273,7 +281,7 @@ if [[ $EVAL -eq 1 ]]; then
   say "stage 9/9 (setup): Qwen-Image-Bench judge env + Q-Judger weights -> $ROOT/qib"
   if [[ $EVAL_ONLY -eq 1 ]]; then
     for G in "${GROUPS_RUN[@]}"; do   # before the ~65 GB judge install, not after it
-      [[ $DRY -eq 1 || -f "$OUTPUT_DIR/$(exp_of "$G")/step_0000500.pth" ]] || die "no $OUTPUT_DIR/$(exp_of "$G")/step_0000500.pth: train $G first"
+      [[ $DRY -eq 1 || -f "$OUTPUT_DIR/$(exp_of "$G")/$LAST" ]] || die "no $OUTPUT_DIR/$(exp_of "$G")/$LAST: train $G first (or pass the --steps it ran)"
     done
   fi
   if [[ $DRY -eq 1 ]]; then info "would run: ${QIB[*]} --setup"
@@ -287,7 +295,8 @@ say "stage 8/9: training ${GROUPS_RUN[*]}"
 for G in "${GROUPS_RUN[@]}"; do
   CONFIG="$(config_of "$G")"; EXP="$(exp_of "$G")"; RUN_DIR="$OUTPUT_DIR/$EXP"
   ARGS=("$CONFIG" --set "spatial_gan.qwen_snapshot=$QWEN3VL_DIR" --set "spatial_gan.reference_images=$IMAGES"
-        --set "memory.micro_batch=$MICRO")
+        --set "memory.micro_batch=$MICRO" --set "steps=$STEPS" --set "lr_schedule.total_steps=$STEPS"
+        --set "discriminator_lr_schedule.total_steps=$STEPS")
   [[ "$ATTN" != config ]] && ARGS+=(--set "zimage.attention_backend=$ATTN")
   # the gate exercises every memory peak of the real run in 3 updates: the drift probe, and for
   # Group2 the generator's GAN term from update 1 (the real run starts it at 51)
@@ -309,7 +318,7 @@ for G in "${GROUPS_RUN[@]}"; do
   PEAK="$LOG_DIR/peak_$G.txt"; mkdir -p "$LOG_DIR"; : > "$PEAK"
   ( while sleep 5; do smi "${SEL[@]}" --query-gpu=index,memory.used --format=csv,noheader,nounits >> "$PEAK" || true; done ) &
   MON=$!
-  (( GATE == 0 )) && wandb_start "$RUN_DIR" "k512-$G" "$GPUS" 500 "$CONFIG"
+  (( GATE == 0 )) && wandb_start "$RUN_DIR" "k512-$G" "$GPUS" "$STEPS" "$CONFIG"
   set +e; env "${TENV[@]}" bash "$ZDIR/scripts/train.sh" "${ARGS[@]}" 2>&1 | tee -a "$LOG_DIR/train_$G$([[ $GATE -eq 1 ]] && echo _gate).log"
   RC=${PIPESTATUS[0]}; set -e
   kill "$MON" 2>/dev/null || true
@@ -324,7 +333,7 @@ for G in "${GROUPS_RUN[@]}"; do
     (( N >= 3 )) || die "gate $G: expected 3 logged updates in $RUN_DIR/train_log.jsonl, found $N"
     info "GATE PASS $G: 3 updates, last row: $(tail -1 "$RUN_DIR/train_log.jsonl" | cut -c1-300)"
   else
-    [[ -f "$RUN_DIR/step_0000500.pth" ]] || die "group $G ended without step_0000500.pth"
+    [[ -f "$RUN_DIR/$LAST" ]] || die "group $G ended without $LAST"
     info "DONE $G: checkpoints $(ls "$RUN_DIR" | grep -c '^step_') in $RUN_DIR"
   fi
 done
@@ -332,17 +341,17 @@ fi
 
 # ---------------------------------------------------------------------------
 if [[ $EVAL -eq 1 ]]; then
-  say "stage 9/9: Qwen-Image-Bench: step 500 of ${GROUPS_RUN[*]}$( (( BASELINES )) && echo ', teacher at 9 and 2 steps')"
+  say "stage 9/9: Qwen-Image-Bench: step $STEPS of ${GROUPS_RUN[*]}$( (( BASELINES )) && echo ', teacher at 9 and 2 steps')"
   ALL="$(IFS=,; echo "${GPU_IDS[*]}")"
   EVQ=("${QIB[@]}" --gen-gpus "$ALL" --judge-gpus "$ALL")
   if [[ $DRY -eq 1 ]]; then
-    for G in "${GROUPS_RUN[@]}"; do info "would run: ${EVQ[*]} --name $(exp_of "$G")_s500 --ckpt $OUTPUT_DIR/$(exp_of "$G")/step_0000500.pth"; done
+    for G in "${GROUPS_RUN[@]}"; do info "would run: ${EVQ[*]} --name $(exp_of "$G")_s$STEPS --ckpt $OUTPUT_DIR/$(exp_of "$G")/$LAST"; done
     (( BASELINES )) && info "would run: ${EVQ[*]} --name turbo9 --teacher-steps 9  (and turbo2 --teacher-steps 2)"
   else
     NAMES=()
     for G in "${GROUPS_RUN[@]}"; do
-      EXP="$(exp_of "$G")"; n="${EXP}_s500"
-      "${EVQ[@]}" --name "$n" --ckpt "$OUTPUT_DIR/$EXP/step_0000500.pth" \
+      EXP="$(exp_of "$G")"; n="${EXP}_s$STEPS"
+      "${EVQ[@]}" --name "$n" --ckpt "$OUTPUT_DIR/$EXP/$LAST" \
         || die "Qwen-Image-Bench failed on $G (re-run with --eval-only: finished parts are kept)"
       NAMES+=("$n")
     done
