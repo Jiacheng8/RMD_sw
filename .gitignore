@@ -54,3 +54,6 @@ assets/pickapic_train_prompts.jsonl
 # OS / editor
 .DS_Store
 *.swp
+
+# Written by the launchers from git HEAD
+SOURCE_COMMIT

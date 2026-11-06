@@ -19,7 +19,10 @@ import sys
 import time
 
 CODE=Path(__file__).resolve().parents[1]
-ROOT=Path('/data/rdm-workspace/rdm-sets')
+# H20 defaults; another machine sets RDM_ROOT, RDM_REF_GPUS (comma list) and RDM_REF_GPU_BUDGET_GIB.
+ROOT=Path(os.environ.get('RDM_ROOT','/data/rdm-workspace/rdm-sets'))
+GPUS=os.environ.get('RDM_REF_GPUS','4,5').split(',')
+BUDGET_GIB=float(os.environ.get('RDM_REF_GPU_BUDGET_GIB','3.5'))
 PACK=ROOT/'zimage/zimage-ref-v1'
 SOURCE=PACK/'reference_store_qwen'
 DEST=PACK/'reference_store_dino_qwenvl'
@@ -50,13 +53,13 @@ def worker(rank):
     from rdm.data.imagenet import default_transform
     from rdm.representation.backbones.qwen3_vl_backbone import Qwen3VLBackbone
     from rdm.sw_lmmd.reference_images import ReferenceImageStore
-    gpu=rank+4
-    assert os.environ['CUDA_VISIBLE_DEVICES']==str(gpu)
+    gpu=GPUS[rank]
+    assert os.environ['CUDA_VISIBLE_DEVICES']==gpu
     torch.set_num_threads(2)
-    budget=int(3.5*1024**3)
+    budget=int(BUDGET_GIB*1024**3)
     torch.cuda.set_per_process_memory_fraction(budget/torch.cuda.get_device_properties(0).total_memory)
     table=np.load(WORK/'encoder_features/qwen3vl_4b.npy',mmap_mode='r+')
-    count=len(table);start=count*rank//2;end=count*(rank+1)//2
+    count=len(table);start=count*rank//len(GPUS);end=count*(rank+1)//len(GPUS)
     progress_path=WORK/f'rank{rank}-progress.json'
     prior=json.loads(progress_path.read_text()) if progress_path.exists() else None
     next_row=prior['next_row'] if prior else start
@@ -121,9 +124,9 @@ def dino_audit():
     from rdm.representation.backbones import build_backbone
     from rdm.representation.registry import by_name
     from rdm.sw_lmmd.reference_images import ReferenceImageStore
-    assert os.environ['CUDA_VISIBLE_DEVICES']=='4'
+    assert os.environ['CUDA_VISIBLE_DEVICES']==GPUS[0]
     torch.set_num_threads(2)
-    torch.cuda.set_per_process_memory_fraction(3.5*1024**3/torch.cuda.get_device_properties(0).total_memory)
+    torch.cuda.set_per_process_memory_fraction(BUDGET_GIB*1024**3/torch.cuda.get_device_properties(0).total_memory)
     images=ReferenceImageStore(IMAGE);transform=default_transform(512)
     model=build_backbone(by_name('dinov3_l'),'cuda')
     stored=np.load(SOURCE/'encoder_features/dinov3_l.npy',mmap_mode='r')
@@ -171,9 +174,9 @@ def parent():
     signal.signal(signal.SIGTERM,stop)
     signal.signal(signal.SIGINT,stop)
     try:
-        for rank in (0,1):
+        for rank in range(len(GPUS)):
             if (WORK/f'rank{rank}-complete.json').exists():continue
-            env=os.environ.copy();env['CUDA_VISIBLE_DEVICES']=str(rank+4)
+            env=os.environ.copy();env['CUDA_VISIBLE_DEVICES']=GPUS[rank]
             command=[sys.executable,__file__,'--worker',str(rank)]
             with (WORK/f'rank{rank}.log').open('ab') as stream:
                 p=subprocess.Popen(command,env=env,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
@@ -190,12 +193,12 @@ def parent():
                 write(command_dir/f'rank{rank}.exit.json',dict(actual_exit=p.returncode,operator_or_parent_cleanup=True))
     table=np.load(path,mmap_mode='r');assert table.shape==(125808,2560) and table.dtype==np.float16
     for lo in range(0,len(table),4096):assert np.isfinite(table[lo:lo+4096]).all()
-    contracts=[json.loads((WORK/f'rank{k}-model-contract.json').read_text()) for k in (0,1)];assert contracts[0]==contracts[1]
-    for k in (0,1):
+    contracts=[json.loads((WORK/f'rank{k}-model-contract.json').read_text()) for k in range(len(GPUS))];assert all(c==contracts[0] for c in contracts)
+    for k in range(len(GPUS)):
         proof=json.loads((WORK/f'rank{k}-complete.json').read_text());assert proof['passed']
         assert hashlib.sha256(np.asarray(table[proof['start']:proof['end']]).tobytes()).hexdigest()==proof['feature_sha256']
     assert json.loads((WORK/'pixel-gradient-verified.json').read_text())['passed']
-    env=os.environ.copy();env['CUDA_VISIBLE_DEVICES']='4'
+    env=os.environ.copy();env['CUDA_VISIBLE_DEVICES']=GPUS[0]
     command=[sys.executable,__file__,'--dino-audit']
     with (WORK/'dino-audit.log').open('ab') as stream:p=subprocess.run(command,env=env,stdout=stream,stderr=subprocess.STDOUT)
     write(command_dir/'dino-audit.exit.json',dict(actual_exit=p.returncode));assert p.returncode==0
@@ -233,12 +236,13 @@ def parent():
         raw_image_features_finite=True,image_features_L2_normalized=False,required_text_rows=len(required),text_norm_verified=True,
         feature_sha256=sha(path),canonical_index_sha256=image_manifest['index']['sha256'],bandwidth=bandwidth,completed_epoch=time.time())
     write(WORK/'reference-verified.json',proof);WORK.rename(DEST)
+    (ROOT/'control').mkdir(parents=True,exist_ok=True)
     write(ROOT/'control/dino-qwenvl-mmd2-reference-verified.json',dict(proof,reference_root=str(DEST)))
     print(json.dumps(proof),flush=True)
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--worker',type=int,choices=[0,1]);parser.add_argument('--dino-audit',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--worker',type=int,choices=range(len(GPUS)));parser.add_argument('--dino-audit',action='store_true');args=parser.parse_args()
     if args.worker is not None:worker(args.worker)
     elif args.dino_audit:dino_audit()
     else:parent()

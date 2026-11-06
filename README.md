@@ -10,6 +10,9 @@
 
 ---
 
+> **Running the two current experiments on a new machine (or asking a coding agent to)?**
+> Follow [README_AGENT.md](README_AGENT.md): environment, downloads and both runs, step by step.
+
 ## What this fork is
 
 ### Current H20 protocol: two separate experiments (2026-11-06)
@@ -67,6 +70,56 @@ Group2 additionally validates both D updates and the active fixed-weight GAN-G
 path. Existing outputs are never overwritten or silently restarted.
 The two experiment names end in `k512-b64-mmd-only-from0` and
 `k512-b64-fixed-from0`, with separate logs, archive receipts and output directories.
+
+#### Run the pair on any other machine (e.g. 4× A100 80GB)
+
+`ops/h20-run-k512-b64-fixed.sh` only works on that H20 (fixed paths, GPUs 6/7, pre-built data).
+On a fresh Linux machine with conda, ≥2 × 80 GB GPUs and **~900 GB** free disk, one script
+rebuilds every input from public Hugging Face repos and trains both groups:
+
+```bash
+git clone -b zimage-exp https://github.com/Jiacheng8/RMD_sw.git RDM && cd RDM
+tmux new -s k512                                   # runs for many hours
+ROOT=/data/<you>/rdm-sets
+bash z-image/scripts/k512_two_groups.sh --root $ROOT --dry-run   # 1. print the plan; changes nothing
+bash z-image/scripts/k512_two_groups.sh --root $ROOT --gate      # 2. prepare everything + 3 updates per group
+bash z-image/scripts/k512_two_groups.sh --root $ROOT             # 3. Group1 (MMD only), then Group2 (MMD + GAN)
+```
+
+Other options: `mmd-only` / `mmd-gan` to train one group, `<group> --resume` to continue a
+stopped group, `--eval` to run Qwen-Image-Bench on both step-500 checkpoints, `--no-wandb`
+to run without a `wandb login`. `--help` lists every option.
+
+| stage | what | source | size / time |
+|---|---|---|---|
+| 1 env | conda env `rdm` + aria2 | `scripts/setup_env.sh` | |
+| 2 download | Z-Image-Turbo, DINOv3-L, Qwen3-VL-4B-Instruct @ `ebb281ec` | HF | ~41 GB |
+| 3 reference | base store, prompts, DINOv3 features | `jiachengcui888/zimage-ref-v1` | 1.6 GB |
+| 4 contexts | Qwen3 prompt contexts, on every GPU | rebuilt locally | ~70 GB, minutes |
+| 5 qwen text | Qwen3-4B text features → `reference_store_qwen` | `jiachengcui888/zimage-ref-qwen-text` | 1.3 GB |
+| 6 images | 87 teacher-render tars, kept (the GAN reads real PNGs from them) | `jiachengcui888/zimage-turbo-reference` | 173 GB |
+| 7 qwen-vl | Qwen3-VL image features of all 125,808 renders → `reference_store_dino_qwenvl` | computed locally | 0.6 GB |
+| 8 train | Group1 then Group2, fresh from pretrained, separate run dirs | `z-image/scripts/train.sh` | ~300 GB per group |
+| 9 eval | `--eval` only: Qwen-Image-Bench on step 500 | `z-image/eval_qib` | +65 GB judge |
+
+Every finished stage is detected and skipped, so re-running the same command resumes. Results go
+to `$ROOT/zimage/work_dirs/<exp_name>/` (`train_log.jsonl`, `step_0000050.pth` … `step_0000500.pth`,
+`resume.pth`); console logs go to `$ROOT/zimage/logs/`.
+
+What differs from the H20 run, and how the script handles it:
+
+- **Attention.** The configs use FlashAttention 3, which only runs on Hopper (H100/H20). On other
+  GPUs (A100 included) the script uses PyTorch SDPA (`--attention native`) instead. It computes the
+  same attention, but bf16 rounding differs, so A100 losses will not match H20 bit for bit.
+- **Memory.** `--micro-batch` defaults to 2, as on H20 (96 GB cards). If the `--gate` run reports
+  CUDA OOM on 80 GB cards, use `--micro-batch 1`. The global batch stays 64 (4 GPUs: accumulation
+  8 → 16), so the objective is unchanged. The gate's 3 updates cover every memory peak of the real
+  run: the drift probe and, for Group2, the GAN generator term (forced on from update 1). It prints
+  each GPU's peak memory and `GATE PASS <group>`.
+- **GPU count.** Any count that divides 64 / micro-batch works; world-size invariance is tested.
+- **No H20 controller.** The script runs no CPU test gate, waits for no lock, and makes no
+  object-store archive. Checkpoints stay in the run directory. It refuses to start if a selected
+  GPU is busy or a run directory already holds a run.
 
 #### Compare the results
 
