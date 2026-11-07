@@ -47,7 +47,7 @@ bash /tmp/miniconda.sh -b -p $HOME/miniconda3 && eval "$($HOME/miniconda3/bin/co
 
 任选一种方式给机器 token，**不要写进 prompt，也不要交给 agent**：
 - 写进仓库里的文件（已被 git 忽略）：`echo hf_xxx > /root/RDM/.hf_token && chmod 600 /root/RDM/.hf_token`；
-- 或者在启动 agent 的那个终端里先 `export HF_TOKEN=hf_xxx`，再启动 agent。agent 执行的命令会继承这个变量。
+- 或者在启动 agent 的那个终端里先 `export HF_TOKEN=hf_xxx`，再启动 agent。agent 执行的命令会继承这个变量。但脚本在 tmux 里运行时不一定能拿到它（见“agent 执行步骤”A），所以优先用第一种方式。
 
 ## 第 4 步：把下面的 prompt 交给 coding agent
 
@@ -79,18 +79,26 @@ bash /tmp/miniconda.sh -b -p $HOME/miniconda3 && eval "$($HOME/miniconda3/bin/co
 
 ## agent 执行步骤
 
-### A. 启动一键脚本（后台运行）
+### A. 在 tmux 里启动一键脚本
 
-整个流程要 1.5–2 小时，比大多数 agent 单条命令的时间上限长，所以要放在后台运行，再查看日志：
+整个流程要 1.5–2 小时，比大多数 agent 单条命令的时间上限长，所以放在 tmux 会话 `e1` 里跑。日志同时写到 `/root/rdm-sets/e1_run.log`：
 ```bash
 cd /root/RDM && mkdir -p /root/rdm-sets
-nohup bash tools/run_cache_drift.sh --root /root/rdm-sets > /root/rdm-sets/e1_run.log 2>&1 &
+tmux has-session -t e1 2>/dev/null && echo "session e1 already exists: do not start a second run"
+tmux new-session -d -s e1 \
+  "cd /root/RDM && bash tools/run_cache_drift.sh --root /root/rdm-sets 2>&1 | tee -a /root/rdm-sets/e1_run.log; exec bash"
 ```
+- 末尾的 `exec bash` 让会话在脚本结束后保留，人可以用 `tmux attach -t e1` 进去看完整输出（按 `Ctrl-b d` 离开，脚本不受影响）。
+- 如果会话 `e1` 已经存在，说明已经在跑或跑过了，不要再启动一个。先用 `tail` 看日志：在跑就继续等；已停止的话，先用 `tmux kill-session -t e1` 关掉旧会话，再用同一条命令重启，脚本会从断点继续。
+- 机器上没有 tmux（`command -v tmux` 没有输出）而且不能安装时，改用：
+  `nohup bash tools/run_cache_drift.sh --root /root/rdm-sets >> /root/rdm-sets/e1_run.log 2>&1 &`
+- token：tmux 会话继承的是 tmux 服务启动时的环境变量，不一定是当前 shell 的，所以 agent 这边 `export` 的 `HF_TOKEN` 可能传不进去。用 tmux 时，token 请放在 `/root/RDM/.hf_token` 文件里（第 3 步第一种方式）。
+
 想先看一下计划、不做任何改动的话，可以先运行 `bash tools/run_cache_drift.sh --root /root/rdm-sets --dry-run`。
 
 ### B. 等它跑完
 
-每隔几分钟看一次 `tail -n 30 /root/rdm-sets/e1_run.log`：
+每隔几分钟看一次 `tail -n 30 /root/rdm-sets/e1_run.log`，也可以用 `tmux capture-pane -p -t e1 | tail -n 30`：
 - 跑完时最后一行是 `==> done: .../summary.md, notes.md ...`；
 - 出错时有一行 `ERROR: ...`，脚本会停下。处理方法见下面的“常见问题”。
 
@@ -158,4 +166,5 @@ step 200 和 1000 只有权重，所以显示 `critic OFF`；step 2000 从 `resu
 | `not the main-run setup: ...` | 配置不是主实验的设置 | 停下来报告；不要改脚本里的检查 |
 | CUDA out of memory | 显存不足 | 停下来报告；不要改 `micro_batch`（它决定每次前向的 batch 组成，改了会影响 floor 的测量） |
 | `Address already in use` | torchrun 的端口被占用 | 加 `--port 29511` 重跑 |
-| 中途被打断（机器重启、进程被杀） | — | 用同一条命令重跑；已写出的 json 会跳过，正在跑的那次从头开始 |
+| 中途被打断（机器重启、进程被杀） | — | 先 `tmux kill-session -t e1`（如果会话还在），再用 A 的同一条命令重启；已写出的 json 会跳过，正在跑的那次从头开始 |
+| 阶段 1 报没有 token，但人说已经 `export HF_TOKEN` 了 | tmux 会话没有继承这个变量 | 停下来，请人把 token 写进 `/root/RDM/.hf_token`，然后重启会话 |
