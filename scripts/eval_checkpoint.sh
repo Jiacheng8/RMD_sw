@@ -22,6 +22,7 @@
 # --steps N    sampling steps: 1 for a checkpoint, 4 for `base` (= the klein-4B teacher)
 # --env NAME   the rdm conda env (default $CONDA_ENV or rdm)
 # --no-geneval render + PickScore only        --force  redo stages already done
+# --no-diversity  skip stage 3 (seed diversity)
 # --dry-run    print the plan and the eval config, run nothing
 #
 # A re-run skips the stages whose outputs exist, and refuses an --out that holds a different
@@ -38,6 +39,7 @@ CKPT=""
 OUT=""
 STEPS=""
 GENEVAL=1
+DIVERSITY=1
 FORCE=0
 DRY=0
 PICKSCORE_CTX_LEN=232
@@ -51,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --steps)        STEPS="$2"; shift 2 ;;
     --env)          CONDA_ENV="$2"; shift 2 ;;
     --no-geneval)   GENEVAL=0; shift ;;
+    --no-diversity) DIVERSITY=0; shift ;;
     --force)        FORCE=1; shift ;;
     --dry-run)      DRY=1; shift ;;
     -h|--help)      sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -221,7 +224,9 @@ fi
 # ---------------------------------------------------------------------------
 say "3/3 seed diversity (the 4 images of each GenEval prompt)"
 DIV="$OUT/seed_diversity.json"
-if [[ $FORCE -eq 0 && $RENDERED -eq 0 && -f "$DIV" ]]; then
+if [[ $DIVERSITY -eq 0 ]]; then
+  info "skipped (--no-diversity)"
+elif [[ $FORCE -eq 0 && $RENDERED -eq 0 && -f "$DIV" ]]; then
   info "done before ($DIV); skipping"
 else
   # never fails the evaluation: a missing encoder is skipped inside, anything else only warns
