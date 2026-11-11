@@ -20,6 +20,8 @@
 每个模型约 1–1.5 小时（按 s500、s2000 实测的每 1000 张 3.6–6 GPU 小时估算），两个合计 2–3 小时，
 再加首次下载 judge 环境和权重（~65 GB）的时间。40 GB 的卡一份 judge 要 2 张，时间约翻倍。
 
+需要 NVIDIA 驱动和 conda（没有就先装 Miniconda3，见 `Baseline-README.md` 第 2 步）。
+
 ```bash
 git clone -b zimage-exp https://github.com/Jiacheng8/RMD_sw.git /root/RDM && cd /root/RDM
 bash z-image/scripts/judge_hub_runs.sh --root /root/rdm-sets --dry-run   # 先看检查和计划

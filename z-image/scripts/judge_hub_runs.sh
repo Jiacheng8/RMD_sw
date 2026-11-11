@@ -74,6 +74,20 @@ IFS=, read -r -a REF_LIST <<< "$REFS"
 [[ "$SMOKE" =~ ^[0-9]+$ ]] || die "--smoke takes a number of images"
 [[ "$SUFFIX" =~ ^[A-Za-z0-9._-]*$ ]] || die "--suffix: letters, digits, . _ - only"
 local_name() { echo "$1$SUFFIX"; }
+# repoint SRC DST IMAGES [N]: copy input.jsonl (first N rows) with image_path = IMAGES/<file name>. The old
+# paths are another machine's; they are never looked at (a path under an unreadable dir, e.g. /root, would
+# make the judge's own relocate stop with PermissionError)
+repoint() { python3 - "$@" <<'PY'
+import json, os, sys
+src, dst, images = sys.argv[1:4]
+n = int(sys.argv[4]) if len(sys.argv) > 4 else None
+rows = [json.loads(l) for l in open(src, encoding="utf-8") if l.strip()][:n]
+with open(dst, "w", encoding="utf-8") as f:
+    for r in rows:
+        r["image_path"] = os.path.join(os.path.abspath(images), os.path.basename(r["image_path"]))
+        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+PY
+}
 judged() { [[ -f "$RUNS/$(local_name "$1")/input_bench_scores.json" ]]; }
 
 # --- checks: everything that can be known now fails now, not hours into the run ------------------
@@ -187,7 +201,7 @@ for r in "${RUN_LIST[@]}"; do
   rm -rf "${d:?}.tmp"; mkdir -p "$d.tmp"
   cp -al "$src/images" "$d.tmp/images"
   cp "$src/generation.json" "$d.tmp/" 2>/dev/null || true
-  cp "$src/input.jsonl" "$d.tmp/input.jsonl"     # run_eval.sh re-points image_path at $d/images
+  repoint "$src/input.jsonl" "$d.tmp/input.jsonl" "$d/images" || die "$r: could not write input.jsonl"
   mv "$d.tmp" "$d"
   info "$n: $got images"
 done
@@ -198,7 +212,7 @@ if (( SMOKE )); then
   say "4/6 smoke test: $n"
   if [[ ! -f "$d/input.jsonl" ]]; then
     rm -rf "${d:?}"; mkdir -p "$d/images"
-    head -n "$SMOKE" "$from/input.jsonl" > "$d/input.tmp"
+    repoint "$from/input.jsonl" "$d/input.tmp" "$d/images" "$SMOKE" || die "could not write the smoke test's input.jsonl"
     python3 - "$d/input.tmp" "$from/images" "$d/images" <<'PY'
 import json, os, sys
 rows, src, dst = sys.argv[1:]
