@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Machine 2 of the mechanism ablation: run (a) "global-plus-self-b1" to 3,400 updates on ONE fresh rented 2 x H100
-# box, evaluated there together with the anchor, then uploaded. Independent of machine 1.
+# box, then uploaded; it is SCORED on the 6 x 4090
+# paper evaluation box afterwards (experiments/mechanism_ablation/eval_4090.sh). Independent of machine 1.
 #
 #   HF_TOKEN=hf_... bash run_machine2_global_plus_self.sh          # optional: WORK_DIR=/path (default ./work)
 #
 # (copy this file to the box, e.g. curl -fsSLO https://raw.githubusercontent.com/Jiacheng8/RMD_sw/mechanism-ablation/experiments/mechanism_ablation/run_machine2_global_plus_self.sh;
-#  run it inside tmux: ~7 h). HF_TOKEN: jiachengcui888's WRITE token, with access to the private dataset
+#  run it inside tmux: ~6 h). HF_TOKEN: jiachengcui888's WRITE token, with access to the private dataset
 #  jiachengcui888/sw-rdm-reference-store and the gated black-forest-labs/FLUX.2-dev (licence accepted).
 #
 # global-plus-self-b1 = the Table 2 Global arm (jiachengcui888/global-ablation-nogroup: Nystrom attraction to
@@ -19,7 +20,7 @@
 #
 # Stages (markers in WORK_DIR/done/; a rerun skips finished stages and continues training from resume.pth):
 #   setup            preflight, Miniconda, repo @ pinned commit, env (= the main run's versions), FLUX.2
-#                    klein-4B / encoders / COCO store (md5-checked) / Qwen3 ctx, GenEval scorer, PickScore model
+#                    klein-4B / encoders / COCO store (md5-checked) / Qwen3 ctx
 #   landmarks        the Global arm's published Nystrom bundles (SHA256-checked; never rebuilt)
 #   step0            main run steps 200, 1000, 2000 (step_0002000.pth), 3400: |g_own|/|g_total| and the two
 #                    cosines, 8 consecutive windows each, per encoder and concatenated     (~1 h)
@@ -28,21 +29,19 @@
 #                    STOP -> WORK_DIR/beta_star.json (read by both training phases)
 #   train_phase1     0 -> 2000 with own_term.beta = beta*                         (~2 h)
 #   train_phase2     2000 -> 3400, decay horizon 3400                             (~1.4 h)
-#   evaluate         step 3400 (GPU 0) + the anchor = main run step 3400 (GPU 1), as machine 1
 #   report, upload   as machine 1, plus the Step 0 table and the calibration log
 RUN_NAME="global-plus-self-b1"
 CONFIG_NAME="global_plus_self"
 PHASE2_HORIZON=3400
-NEED_GB=380; NEED_AFTER_SETUP_GB=250
-NEED_LINES=("setup ~140 (models 26, store 8.5 + 8.5 untar, Qwen3 ctx 61, GenEval env + detector 12, conda env 12, caches)"
+NEED_GB=350; NEED_AFTER_SETUP_GB=220
+NEED_LINES=("setup ~140 (models 26, store 8.5 + 8.5 untar, Qwen3 ctx 61, conda env 12, caches)"
             "training ~187 (9 checkpoints x 15.5 + resume.pth 23.5 x 2 while it is replaced)"
-            "main-run checkpoints 15.5 at a time (step 0; step 3400 kept as the anchor) + 15.5, Nystrom 0.5,"
-            "evaluation ~3, headroom ~15")
+            "main-run checkpoints for Step 0, 15.5 at a time, Nystrom 0.5, headroom ~15")
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 GIT_URL="https://github.com/Jiacheng8/RMD_sw.git"
 GIT_BRANCH="mechanism-ablation"
-PINNED_COMMIT="054d575e700b75a6c5ba49a495b56890133cafa0"     # the training code: attraction.skip_diagonal / own_term.beta, tested
+PINNED_COMMIT="82d8bd71537ce0dae20d9aed51aecf5c56e7aba7"     # the training code: attraction.skip_diagonal / own_term.beta, tested
 OWNER="jiachengcui888"
 
 WORK="$(realpath -m "${WORK_DIR:-./work}")"
@@ -125,7 +124,7 @@ do_step0() {
       "$REPO/experiments/mechanism_ablation/configs/main_probe.yaml" --ckpt "$ckpt" --out "$json" \
       --set "reference_root=$STORE" 2>&1 | tee "$LOGS/step0_$s.log" || die "Step 0 at step $s failed"
     [[ -s "$json" ]] || die "Step 0 at step $s wrote no $json"
-    (( s == 3400 )) || rm -f "$ckpt"          # this script's own download; step 3400 stays for the anchor
+    rm -f "$ckpt"                             # this script's own download, re-downloadable
   done
   (cd "$REPO" && pyrun -m experiments.mechanism_ablation.probe --table "$WORK/step0/step0_share_step*.json") \
     | tee "$WORK/step0/step0_table.md"
@@ -173,7 +172,6 @@ BETA="$(beta_star)"; [[ -n "$BETA" ]] || die "no beta* in $WORK/beta_star.json"
 info "own_term.beta = beta* = $BETA (from $WORK/beta_star.json)"
 stage train_phase1   do_train_phase1 --set "own_term.beta=$BETA"
 stage train_phase2   do_train_phase2 --set "own_term.beta=$BETA"
-stage evaluate       do_evaluate
 stage report         do_report --step0 "$WORK/step0/step0_share_step*.json" --calibration "$WORK/calibration/calibration.json"
 do_upload_m2() {
   mkdir -p "$RESULT/step0" "$RESULT/calibration"
@@ -189,3 +187,4 @@ do_upload_m2() {
 stage upload         do_upload_m2
 say "done"
 grep -h '^==> SUMMARY' "$LOGS/run.log" | tail -1
+echo "    next: score it on the 6 x 4090 box -- bash experiments/mechanism_ablation/eval_4090.sh"

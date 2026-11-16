@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Machine 1 of the mechanism ablation: run (b) "window-nodiag" to 3,400 updates on ONE fresh rented 2 x H100
-# box, evaluated there together with the anchor, then uploaded. Independent of machine 2.
+# box, then uploaded; it is SCORED on the 6 x 4090
+# paper evaluation box afterwards (experiments/mechanism_ablation/eval_4090.sh). Independent of machine 2.
 #
 #   HF_TOKEN=hf_... bash run_machine1_window_nodiag.sh          # optional: WORK_DIR=/path (default ./work)
 #
 # (copy this file to the box, e.g. curl -fsSLO https://raw.githubusercontent.com/Jiacheng8/RMD_sw/mechanism-ablation/experiments/mechanism_ablation/run_machine1_window_nodiag.sh;
-#  run it inside tmux: ~6 h). HF_TOKEN: jiachengcui888's WRITE token, with access to the private dataset
+#  run it inside tmux: ~5 h). HF_TOKEN: jiachengcui888's WRITE token, with access to the private dataset
 #  jiachengcui888/sw-rdm-reference-store and the gated black-forest-labs/FLUX.2-dev (licence accepted).
 #
 # window-nodiag = the main run (jiachengcui888/w128_s32_2000steps_w-gan) with the cross diagonal k(X_i, Y_i)
@@ -20,27 +21,25 @@
 #
 # Stages (markers in WORK_DIR/done/; a rerun skips finished stages and continues training from resume.pth):
 #   setup            preflight, Miniconda, repo @ pinned commit, env (torch 2.8.0+cu126 + requirements-lock.txt
-#                    = the main run's), FLUX.2 klein-4B / encoders / COCO store (md5-checked) / Qwen3 ctx,
-#                    GenEval scorer + detector, PickScore model
+#                    = the main run's), FLUX.2 klein-4B / encoders / COCO store (md5-checked) / Qwen3 ctx
 #   train_phase1     0 -> 2000                                                     (~2 h)
 #   train_phase2     2000 -> 3400, decay horizon 4000                              (~1.4 h)
-#   evaluate         step 3400 of window-nodiag (GPU 0) + the anchor = main run step 3400 (GPU 1):
-#                    GenEval 553 x 4, shared noise, official detector; PickScore 499 Pick-a-Pic, 1 image each
-#   report           WORK_DIR/out/window-nodiag/{scores,report,run_info}.json|md, train_log.jsonl
-#   upload           -> datasets/jiachengcui888/evaluation-result/mechanism-ablation/window-nodiag/ and the final
-#                       checkpoint -> model repo jiachengcui888/window-nodiag
+#   report           WORK_DIR/out/window-nodiag/{report.md,run_info.json,train_log.jsonl} (training only)
+#   upload           -> datasets/jiachengcui888/evaluation-result/mechanism-ablation/window-nodiag/train_side/
+#                       and the final checkpoint -> model repo jiachengcui888/window-nodiag
+# Then, on the 6 x 4090 box: bash experiments/mechanism_ablation/eval_4090.sh
 RUN_NAME="window-nodiag"
 CONFIG_NAME="window_nodiag"
 PHASE2_HORIZON=4000
-NEED_GB=360; NEED_AFTER_SETUP_GB=230
-NEED_LINES=("setup ~140 (models 26, store 8.5 + 8.5 untar, Qwen3 ctx 61, GenEval env + detector 12, conda env 12, caches)"
+NEED_GB=330; NEED_AFTER_SETUP_GB=200
+NEED_LINES=("setup ~140 (models 26, store 8.5 + 8.5 untar, Qwen3 ctx 61, conda env 12, caches)"
             "training ~187 (9 checkpoints x 15.5 + resume.pth 23.5 x 2 while it is replaced)"
-            "anchor checkpoint 15.5, evaluation ~3, headroom ~15")
+            "headroom ~15")
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 GIT_URL="https://github.com/Jiacheng8/RMD_sw.git"
 GIT_BRANCH="mechanism-ablation"
-PINNED_COMMIT="054d575e700b75a6c5ba49a495b56890133cafa0"     # the training code: attraction.skip_diagonal / own_term.beta, tested
+PINNED_COMMIT="82d8bd71537ce0dae20d9aed51aecf5c56e7aba7"     # the training code: attraction.skip_diagonal / own_term.beta, tested
 OWNER="jiachengcui888"
 
 WORK="$(realpath -m "${WORK_DIR:-./work}")"
@@ -113,8 +112,8 @@ init_env
 stage setup          do_setup
 stage train_phase1   do_train_phase1
 stage train_phase2   do_train_phase2
-stage evaluate       do_evaluate
 stage report         do_report
 stage upload         do_upload
 say "done"
 grep -h '^==> SUMMARY' "$LOGS/run.log" | tail -1
+echo "    next: score it on the 6 x 4090 box -- bash experiments/mechanism_ablation/eval_4090.sh"
