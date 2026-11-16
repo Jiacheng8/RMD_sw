@@ -41,7 +41,7 @@ set -euo pipefail
 export PYTHONNOUSERSITE=1
 GIT_URL="https://github.com/Jiacheng8/RMD_sw.git"
 GIT_BRANCH="mechanism-ablation"
-PINNED_COMMIT="82d8bd71537ce0dae20d9aed51aecf5c56e7aba7"     # the training code: attraction.skip_diagonal / own_term.beta, tested
+PINNED_COMMIT="df83305e3d42f081bd540895be9abff86840408d"     # the training code: attraction.skip_diagonal / own_term.beta, tested
 OWNER="jiachengcui888"
 
 WORK="$(realpath -m "${WORK_DIR:-./work}")"
