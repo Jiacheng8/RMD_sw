@@ -21,7 +21,6 @@ NYS="$DATA/sw_lmmd/ref_ablation/nystrom_m4096"
 OUT="$DATA/sw_lmmd/work_dirs"
 RUN_DIR="$OUT/$RUN_NAME"
 CKPT_MAIN="$WORK/ckpt_main"
-EVAL="$WORK/eval"
 RESULT="$WORK/out/$RUN_NAME"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
@@ -46,7 +45,7 @@ stage() {
 
 init_env() {       # every (re)start: conda on PATH, the data root's env.sh once setup wrote it
   [[ -f "$DATA/env.sh" ]] && source "$DATA/env.sh"
-  mkdir -p "$CKPT_MAIN" "$EVAL" "$RESULT"
+  mkdir -p "$CKPT_MAIN" "$RESULT"
 }
 
 # ---- setup ------------------------------------------------------------------------------------------
@@ -54,18 +53,12 @@ do_setup() {
   # conda env (torch 2.8.0+cu126, bitsandbytes 0.50.2, requirements-lock.txt: the main run's versions),
   # FLUX.2 [klein] 4B + AE + Qwen3 at the snapshots pinned in assets/hf_revisions.json (the main run's),
   # the encoders, the COCO reference store (tar md5 2165876e5cc25b2694b4f553f7a7a107, checked by
-  # download_all.sh), its 61 GB Qwen3 context, and the GenEval scorer env + Mask2Former detector.
+  # download_all.sh) and its 61 GB Qwen3 context. No GenEval / PickScore here: the checkpoints are
+  # scored on the 6 x 4090 paper evaluation box (experiments/mechanism_ablation/eval_4090.sh).
   bash "$REPO/scripts/new_machine.sh" --root "$DATA" --config "$REPO/experiments/mechanism_ablation/configs/$CONFIG_NAME.yaml" \
-    --gpus "$GPUS" --env "$ENV_NAME" --no-train
+    --gpus "$GPUS" --env "$ENV_NAME" --no-train --skip-geneval
   source "$DATA/env.sh"
   [[ -f "$STORE/metadata.json" ]] || die "reference store missing after setup: $STORE"
-  [[ -f "$DATA/geneval/geneval_env.sh" ]] || die "the GenEval scorer env failed to build (see the setup log above)"
-  info "PickScore model + CLIP-H processor -> HF cache"
-  pyrun - <<'PY'
-from huggingface_hub import snapshot_download
-for repo in ("yuvalkirstain/PickScore_v1", "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"):
-    print("   ", snapshot_download(repo, allow_patterns=["*.json", "*.txt", "*.safetensors", "*.model"]))
-PY
   pyrun - "$STORE" <<'PY'
 import json, os, sys, torch
 m = json.load(open(os.path.join(sys.argv[1], "metadata.json")))
@@ -130,32 +123,11 @@ _train() {         # <phase> <steps> [--set ...]: resumes from resume.pth when t
 do_train_phase1() { _train 1 "$PHASE1_STEPS" "$@"; }
 do_train_phase2() { _train 2 "$FINAL_STEP" --set "lr_schedule.total_steps=$PHASE2_HORIZON" "$@"; }
 
-# ---- evaluation: the new arm's step 3400 and the anchor (main run step 3400), one per GPU ------------
-_eval_one() {      # <gpu> <ckpt> <out>
-  CUDA_VISIBLE_DEVICES="$1" bash "$REPO/scripts/eval_checkpoint.sh" "$2" --steps 1 --root "$DATA" \
-    --geneval-root "$DATA/geneval" --out "$3" --no-diversity --env "$ENV_NAME"
-}
-do_evaluate() {
-  local final anchor rc1=0 rc2=0
-  final="$RUN_DIR/$(step_file "$FINAL_STEP")"
-  [[ -f "$final" ]] || die "no $final"
-  anchor="$(dl_main "$FINAL_STEP")"
-  [[ -s "$anchor" ]] || die "could not download the anchor $MAIN_REPO:$(step_file "$FINAL_STEP")"
-  mkdir -p "$EVAL"
-  info "GPU 0: $RUN_NAME step $FINAL_STEP | GPU 1: anchor = main run step $FINAL_STEP (logs in $LOGS)"
-  _eval_one 0 "$final" "$EVAL/$RUN_NAME" > "$LOGS/eval_$RUN_NAME.log" 2>&1 & local p1=$!
-  _eval_one 1 "$anchor" "$EVAL/anchor_main_step3400" > "$LOGS/eval_anchor.log" 2>&1 & local p2=$!
-  wait "$p1" || rc1=$?; wait "$p2" || rc2=$?
-  tail -4 "$LOGS/eval_$RUN_NAME.log"; tail -4 "$LOGS/eval_anchor.log"
-  (( rc1 == 0 )) && [[ -s "$EVAL/$RUN_NAME/summary.json" ]] || die "evaluation of $RUN_NAME failed ($LOGS/eval_$RUN_NAME.log)"
-  (( rc2 == 0 )) && [[ -s "$EVAL/anchor_main_step3400/summary.json" ]] || die "anchor evaluation failed ($LOGS/eval_anchor.log)"
-}
-
 # ---- report + upload --------------------------------------------------------------------------------
 do_report() {      # [extra report.py args]
   mkdir -p "$RESULT"
-  (cd "$REPO" && pyrun -m experiments.mechanism_ablation.report --run-name "$RUN_NAME" --run-dir "$RUN_DIR" \
-     --run-eval "$EVAL/$RUN_NAME" --anchor-eval "$EVAL/anchor_main_step3400" --work "$WORK" --out "$RESULT" "$@")
+  (cd "$REPO" && pyrun -m experiments.mechanism_ablation.report train --run-name "$RUN_NAME" --run-dir "$RUN_DIR" \
+     --work "$WORK" --out "$RESULT" "$@")
   cp -a "$RUN_DIR/train_log.jsonl" "$RESULT/train_log.jsonl"
   cp -a "$RUN_DIR"/pre_diagnostic_step*.json "$RESULT/" 2>/dev/null || true
 }
@@ -163,8 +135,8 @@ do_report() {      # [extra report.py args]
 do_upload() {
   local final; final="$RUN_DIR/$(step_file "$FINAL_STEP")"
   cp -a "$LOGS/run.log" "$RESULT/run.log"
-  info "results -> datasets/$RESULT_DATASET/$RESULT_PATH/$RUN_NAME/"
-  pyrun - "$RESULT_DATASET" "$RESULT_PATH/$RUN_NAME" "$RESULT" <<'PY'
+  info "training-side files -> datasets/$RESULT_DATASET/$RESULT_PATH/$RUN_NAME/train_side/"
+  pyrun - "$RESULT_DATASET" "$RESULT_PATH/$RUN_NAME/train_side" "$RESULT" <<'PY'
 import sys
 from huggingface_hub import HfApi
 HfApi().upload_folder(repo_id=sys.argv[1], repo_type="dataset", path_in_repo=sys.argv[2], folder_path=sys.argv[3],
@@ -175,7 +147,7 @@ PY
   local stage_dir="$WORK/hf_upload/$RUN_NAME"
   rm -rf "$stage_dir"; mkdir -p "$stage_dir"
   ln "$final" "$stage_dir/$(step_file "$FINAL_STEP")" 2>/dev/null || cp -a "$final" "$stage_dir/"
-  cp -a "$RESULT"/{train_log.jsonl,run_info.json,report.md,scores.json} "$stage_dir/"
+  cp -a "$RESULT"/{train_log.jsonl,run_info.json,report.md} "$stage_dir/"
   pyrun - "$OWNER/$RUN_NAME" "$stage_dir" <<'PY'
 import os, sys
 from huggingface_hub import HfApi

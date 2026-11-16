@@ -40,20 +40,31 @@ Table 2 的两个 step-3400 checkpoint 都是续训出来的：先在 0→2000 �
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/Jiacheng8/RMD_sw/mechanism-ablation/experiments/mechanism_ablation/run_machine1_window_nodiag.sh
 tmux new -s mech
-HF_TOKEN=hf_... bash run_machine1_window_nodiag.sh        # 机器 1，约 6 h；可选 WORK_DIR=...（默认 ./work）
-HF_TOKEN=hf_... bash run_machine2_global_plus_self.sh     # 机器 2，约 7 h
+HF_TOKEN=hf_... bash run_machine1_window_nodiag.sh        # 机器 1，约 5 h；可选 WORK_DIR=...（默认 ./work）
+HF_TOKEN=hf_... bash run_machine2_global_plus_self.sh     # 机器 2，约 6 h
 ```
 
 `HF_TOKEN` 要用 jiachengcui888 的 **write** token。它还要能读私有数据集 `jiachengcui888/sw-rdm-reference-store`，并且已在网页上接受 gated 的 `black-forest-labs/FLUX.2-dev` 的许可。
 
-- **预检**（任何超过 1 GB 的下载之前）：恰好 2 张 H100；打印驱动和 CUDA 版本；磁盘空间（机器 1 要约 360 GB，机器 2 约 380 GB，会打印明细）；`HF_TOKEN` 能否写 jiachengcui888、读私有参考库、读 FLUX.2-dev。
-- **环境**：Miniconda（没有就装到 `~/miniconda3`）；仓库 clone 到固定 commit；`scripts/new_machine.sh --no-train` 装环境和下载数据。环境是 torch 2.8.0+cu126、bitsandbytes 0.50.2 和 `requirements-lock.txt`，模型 snapshot 按 `assets/hf_revisions.json`，这几个文件自主实验的 commit 71e96e9 以来没有变过。参考库 tar 的 md5 是 `2165876e…`。另外还装 GenEval 打分环境和检测器，并下载 PickScore 模型。
-- **评测**：机器 1 和机器 2 都评自己臂的 step 3400（GPU 0），同时评锚点 = 主实验 step 3400（GPU 1）。流程是 `scripts/eval_checkpoint.sh --steps 1 --no-diversity`：GenEval 553×4、shared noise、官方检测器；PickScore 用 499 个 Pick-a-Pic prompt，每个 1 张图。锚点与论文相差不超过 0.005 GenEval 且不超过 0.02 PickScore 时，结果可以直接放进 Table 2；否则两组数字都报告，由作者到论文的评测机上重新评测。
+- **预检**（任何超过 1 GB 的下载之前）：恰好 2 张 H100；打印驱动和 CUDA 版本；磁盘空间（机器 1 要约 330 GB，机器 2 约 350 GB，会打印明细）；`HF_TOKEN` 能否写 jiachengcui888、读私有参考库、读 FLUX.2-dev。
+- **环境**：Miniconda（没有就装到 `~/miniconda3`）；仓库 clone 到固定 commit；`scripts/new_machine.sh --no-train --skip-geneval` 装环境和下载数据。环境是 torch 2.8.0+cu126、bitsandbytes 0.50.2 和 `requirements-lock.txt`，模型 snapshot 按 `assets/hf_revisions.json`，这几个文件自主实验的 commit 71e96e9 以来没有变过。参考库 tar 的 md5 是 `2165876e…`。
+- **H100 上不评测**：脚本不装 GenEval，只负责训练和上传。评测在 6×4090 这台论文评测机上做，见下文。
 - **可续跑**：每个阶段完成后写 `WORK_DIR/done/<stage>`。重跑会跳过已完成的阶段，训练从最近的 `resume.pth`（每 400 步一个）接着跑。
-- **上传**：结果传到 `datasets/jiachengcui888/evaluation-result/mechanism-ablation/<run>/`，包括 `scores.json`、`report.md`、`run_info.json`、`train_log.jsonl` 和 `run.log`；机器 2 另有 Step 0 表和标定日志。最终 checkpoint 传到公开 model repo `jiachengcui888/<run>`。日志最后一行是 SUMMARY。
+- **上传**：训练侧文件传到 `datasets/jiachengcui888/evaluation-result/mechanism-ablation/<run>/train_side/`，包括 `report.md`、`run_info.json`、`train_log.jsonl` 和 `run.log`；机器 2 另有 Step 0 表和标定日志。最终的 step 3400 checkpoint 传到公开 model repo `jiachengcui888/<run>`。
 - 日志只有一个：`WORK_DIR/logs/run.log`，同时输出到 stdout。各子步骤也有自己的日志，放在同一目录下。
 
-两边都跑完后，合并成顶层 `report.md`（每臂一行）这一步还没有写成脚本。
+## 评测：在 6×4090 论文评测机上
+
+```bash
+cd /home/jiacheng/RDM-mechanism && git pull
+tmux new -s mecheval
+bash experiments/mechanism_ablation/eval_4090.sh --dry-run
+bash experiments/mechanism_ablation/eval_4090.sh            # HF 上已有的臂都会评；加 --anchor 会顺便重新评测主实验 step 3400
+```
+
+脚本从 HF 下载每个臂的 step 3400 和 `train_side/`，用论文的流程评测：eval root 是 `/data/thor/jiacheng/rdm-sets-eval`，评测脚本用 `/home/jiacheng/RDM` 的 `eval_checkpoint.sh --no-diversity`；GenEval 553×4、shared noise、官方检测器；PickScore 499 个 prompt，每个 1 张图。Table 2 里 Global 3400 的 0.7462 就是这套流程在这里评出来的。之后与 Table 2 并列生成 `report.md`、`scores.json`、`run_info.json`，上传到 `mechanism-ablation/<run>/`。每张空闲 GPU 跑一个 checkpoint，每个约 22 分钟。
+
+两个臂都评完后，合并成顶层 `report.md`（每臂一行）这一步还没有写成脚本。
 
 ## 文件
 
@@ -68,7 +79,8 @@ HF_TOKEN=hf_... bash run_machine2_global_plus_self.sh     # 机器 2，约 7 h
 | `run_arm.sh` | 单次训练：`run_arm.sh <window_nodiag\|global_plus_self\|main_probe> [--set K=V]` |
 | `machine_lib.sh` | 两个机器脚本共用的阶段 |
 | `run_machine{1,2}_*.sh` | 两个一键脚本 |
-| `report.py` | 单个臂加锚点的报告 |
+| `report.py` | 两种报告：`train`（H100 上，只有训练信息）和 `scored`（4090 上，与 Table 2 并列） |
+| `eval_4090.sh` | 在 4090 上评测、生成报告并上传 |
 | `tests/` | `python -m pytest experiments/mechanism_ablation/tests`（CPU，玩具数据） |
 
 ## 日志字段（`train_log.jsonl`，每一步）
