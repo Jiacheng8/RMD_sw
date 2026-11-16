@@ -14,7 +14,7 @@
 # where the last one stopped (eval_checkpoint.sh skips finished stages); Ctrl-C stops every job.
 # Newest checkpoints go first, the baselines last.
 #
-# --root / --geneval-root / --env / --no-geneval / --force are passed on to eval_checkpoint.sh.
+# --root / --geneval-root / --env / --no-geneval / --no-diversity / --force are passed on to eval_checkpoint.sh.
 # --gpus defaults to $CUDA_VISIBLE_DEVICES, else every GPU nvidia-smi lists; --per-gpu 2 needs
 # cards of 48 GB or more (one evaluation peaks at ~21 GB). --s180 PATH uses a local copy of the
 # released checkpoint instead of fetching it from the Hub.
@@ -39,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --geneval-root) PASS+=(--geneval-root "$2"); shift 2 ;;
     --env)          CONDA_ENV="$2"; PASS+=(--env "$2"); shift 2 ;;
     --no-geneval)   PASS+=(--no-geneval); shift ;;
+    --no-diversity) PASS+=(--no-diversity); shift ;;
     --force)        PASS+=(--force); shift ;;
     --gpus)         GPUS="$2"; shift 2 ;;
     --per-gpu)      PER_GPU="$2"; shift 2 ;;
