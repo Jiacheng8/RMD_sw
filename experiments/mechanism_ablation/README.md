@@ -53,16 +53,17 @@ HF_TOKEN=hf_... bash run_machine2_global_plus_self.sh     # 机器 2，约 6 h
 - **上传**：训练侧文件传到 `datasets/jiachengcui888/evaluation-result/mechanism-ablation/<run>/train_side/`，包括 `report.md`、`run_info.json`、`train_log.jsonl` 和 `run.log`；机器 2 另有 Step 0 表和标定日志。最终的 step 3400 checkpoint 传到公开 model repo `jiachengcui888/<run>`。
 - 日志只有一个：`WORK_DIR/logs/run.log`，同时输出到 stdout。各子步骤也有自己的日志，放在同一目录下。
 
-## 评测：在 6×4090 论文评测机上
+## 评测：在 6×4090 论文评测机上自动进行
+
+H100 脚本的最后一步，是在 checkpoint 上传完、并核对过大小和 sha256 之后，写入 `mechanism-ablation/<run>/train_side/UPLOAD_DONE.json`。4090 这边常驻一个监视进程：
 
 ```bash
-cd /home/jiacheng/RDM-mechanism && git pull
-tmux new -s mecheval
-bash experiments/mechanism_ablation/eval_4090.sh --dry-run
-bash experiments/mechanism_ablation/eval_4090.sh            # HF 上已有的臂都会评；加 --anchor 会顺便重新评测主实验 step 3400
+cd /home/jiacheng/RDM-mechanism
+tmux new -d -s mechwatch 'bash experiments/mechanism_ablation/watch_4090.sh'
+tail -f /data/thor/jiacheng/rdm-sets-eval/sw_lmmd/work_dirs/mechanism_ablation/logs/watch.log
 ```
 
-脚本从 HF 下载每个臂的 step 3400 和 `train_side/`，用论文的流程评测：eval root 是 `/data/thor/jiacheng/rdm-sets-eval`，评测脚本用 `/home/jiacheng/RDM` 的 `eval_checkpoint.sh --no-diversity`；GenEval 553×4、shared noise、官方检测器；PickScore 499 个 prompt，每个 1 张图。Table 2 里 Global 3400 的 0.7462 就是这套流程在这里评出来的。之后与 Table 2 并列生成 `report.md`、`scores.json`、`run_info.json`，上传到 `mechanism-ablation/<run>/`。每张空闲 GPU 跑一个 checkpoint，每个约 22 分钟。
+它每 10 分钟查一次 HF。某个臂的标记出现，并且 HF 上 checkpoint 的 sha256 与标记一致时，就调用 `eval_4090.sh --runs <run>`。这一步会下载 checkpoint，用论文的流程评测（eval root `/data/thor/jiacheng/rdm-sets-eval`，评测脚本用 `/home/jiacheng/RDM` 的 `eval_checkpoint.sh --no-diversity`：GenEval 553×4、shared noise、官方检测器；PickScore 499 个 prompt，每个 1 张图），与 Table 2 并列生成 `report.md`、`scores.json`、`run_info.json`，再上传到 `mechanism-ablation/<run>/`。没有空闲 GPU 时会等到下一轮；评测失败最多重试 3 次；两个臂都评完后自己退出。`eval_4090.sh` 也可以手动运行，加 `--anchor` 会顺便重新评测主实验 step 3400。
 
 两个臂都评完后，合并成顶层 `report.md`（每臂一行）这一步还没有写成脚本。
 
@@ -81,6 +82,7 @@ bash experiments/mechanism_ablation/eval_4090.sh            # HF 上已有的臂
 | `run_machine{1,2}_*.sh` | 两个一键脚本 |
 | `report.py` | 两种报告：`train`（H100 上，只有训练信息）和 `scored`（4090 上，与 Table 2 并列） |
 | `eval_4090.sh` | 在 4090 上评测、生成报告并上传 |
+| `watch_4090.sh` | 监视 HF，上传完成后自动调用 `eval_4090.sh` |
 | `tests/` | `python -m pytest experiments/mechanism_ablation/tests`（CPU，玩具数据） |
 
 ## 日志字段（`train_log.jsonl`，每一步）

@@ -162,4 +162,29 @@ if bad:
     sys.exit(f"    size mismatch on the Hub: {bad}")
 print(f"    https://huggingface.co/{repo} (sizes verified)")
 PY
+  # LAST: the completion marker the 4090 watcher (watch_4090.sh) waits for; written only after the checkpoint
+  # is on the Hub with the local size AND sha256
+  info "completion marker -> datasets/$RESULT_DATASET/$RESULT_PATH/$RUN_NAME/train_side/UPLOAD_DONE.json"
+  pyrun - "$OWNER/$RUN_NAME" "$(step_file "$FINAL_STEP")" "$final" "$RESULT_DATASET" \
+      "$RESULT_PATH/$RUN_NAME/train_side/UPLOAD_DONE.json" "$(git -C "$REPO" rev-parse HEAD)" <<'PY'
+import hashlib, io, json, os, sys, time
+from huggingface_hub import HfApi
+repo, fname, local, ds, marker, commit = sys.argv[1:7]
+h = hashlib.sha256()
+with open(local, "rb") as f:
+    for chunk in iter(lambda: f.read(1 << 24), b""):
+        h.update(chunk)
+sha, size = h.hexdigest(), os.path.getsize(local)
+api = HfApi()
+info = api.get_paths_info(repo, [fname], repo_type="model")[0]
+remote_sha = getattr(getattr(info, "lfs", None), "sha256", None)
+if info.size != size or remote_sha != sha:
+    sys.exit(f"    {repo}/{fname} on the Hub does not match the local file (size {info.size} vs {size}, "
+             f"sha256 {remote_sha} vs {sha}): no marker written; rerun to upload again")
+body = {"run": repo.split("/")[-1], "model_repo": repo, "checkpoint": fname, "size": size, "sha256": sha,
+        "training_commit": commit, "uploaded": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+api.upload_file(path_or_fileobj=io.BytesIO(json.dumps(body, indent=2).encode()), path_in_repo=marker,
+                repo_id=ds, repo_type="dataset", commit_message=f"{body['run']}: upload complete")
+print(f"    marker written (sha256 {sha[:12]}..., {size / 1e9:.1f} GB)")
+PY
 }
