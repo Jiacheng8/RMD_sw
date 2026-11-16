@@ -1,0 +1,18 @@
+# Step 0 probe: the main run's own setup (window attraction, both mechanism flags off = the method), used only
+# to MEASURE the own-row share of the L_MMD feature gradient on main-run checkpoints (probe.py).
+extends: ../../ref_ablation/configs/ref_local.yaml
+exp_name: main-probe
+expected_row_order_hash: "6559fefb9a872952"
+
+ref_ablation:
+  ref_mode: local
+  ref_seed: 0
+  nystrom_dir: null
+  pre_diagnostic: false
+  diagnostic_random_draws: 8
+  diagnostic_exact_global: false
+  grad_norms: true
+attraction:
+  skip_diagonal: false
+own_term:
+  beta: 0.0

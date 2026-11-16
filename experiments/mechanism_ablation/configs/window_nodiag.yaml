@@ -1,0 +1,14 @@
+# Run (b) "window-nodiag": the main run (K128 · GAN, ungrouped, window attraction) with the cross diagonal
+# k(X_i, Y_i) dropped from the attraction and the rest rescaled by K/(K-1). Repulsion, critic (it still
+# sees the paired window), window, cache, lr, seeds: unchanged. Phase 1 (0 -> 2000) as written here; phase 2
+# (2000 -> 3400) is set by run_machine1_window_nodiag.sh: resume, steps 3400, decay horizon 4000 -- as the
+# main run's continuation.
+extends: ../../ref_ablation/configs/ref_local.yaml
+exp_name: window-nodiag
+save_freq: 400                       # step_*.pth every 400 steps; resume.pth every 400 and at the end
+expected_row_order_hash: "6559fefb9a872952"
+
+attraction:
+  skip_diagonal: true
+own_term:
+  beta: 0.0

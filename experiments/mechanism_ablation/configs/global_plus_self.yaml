@@ -1,0 +1,14 @@
+# Run (a) "global-plus-self-b1": the Table 2 Global arm (global-ablation-nogroup: Nystrom attraction to all
+# references, same K / B / cache / critic) plus beta * (2/(|E| B)) sum_e sum_i [1 - kappa_e(u_i, v_i)]. The
+# critic's adaptive weight is balanced against the global loss PLUS beta L_self (author's decision).
+# own_term.beta is set by run_machine2_global_plus_self.sh from <WORK_DIR>/beta_star.json; left at 0 this is
+# the Global arm itself. Phase 2 (2000 -> 3400): resume, steps 3400, decay horizon 3400 -- as the Global arm.
+extends: ../../ref_ablation/configs/ref_global.yaml
+exp_name: global-plus-self-b1
+save_freq: 400
+expected_row_order_hash: "6559fefb9a872952"
+
+attraction:
+  skip_diagonal: false
+own_term:
+  beta: 0.0
